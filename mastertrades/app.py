@@ -44,18 +44,27 @@ MODEL_DIR.mkdir(exist_ok=True)
 # ─── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* Tighten default Streamlit padding */
+  /* ── Font rendering — prevent pixelation on all HTML cards ── */
+  * {
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
+  }
+  /* ── Layout ── */
   .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
-  /* Remove top margin from metric labels */
+  /* ── Metric cards ── */
   [data-testid="metric-container"] { background: #161b22; border-radius: 10px;
     padding: 12px 16px !important; border: 1px solid rgba(255,255,255,0.08); }
-  /* Dataframe headers */
+  [data-testid="metric-container"] * { font-smoothing: antialiased !important; }
+  /* ── Dataframe headers ── */
   thead tr th { font-size: 11px !important; text-transform: uppercase;
     letter-spacing: .06em !important; color: #8b949e !important; }
-  /* Hide the hamburger menu & footer */
+  /* ── Chrome iframe/embedded font fix ── */
+  .stMarkdown, .stMarkdown p, .stMarkdown div { font-smooth: always !important; }
+  /* ── Hide chrome ── */
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
-  /* Section divider */
+  /* ── Section divider ── */
   hr { border-color: rgba(255,255,255,0.06) !important; margin: 1.4rem 0 !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -747,87 +756,265 @@ elif page == "Gap Reversal":
     # Live quotes for fill progress bars (TTL=30 s)
     gap_live = load_live_quotes(tuple(gap_tickers))
 
-    # ── Day summary banner ────────────────────────────────────────────────────
+    # ── Trade logic helpers ────────────────────────────────────────────────────
+    def gap_trade_action(gap_dir: str, phase: int = 1) -> tuple[str, str]:
+        """Returns (action_label, action_color) for a gap trade.
+        phase=1 → ride the fill; phase=2 → post-fill reversal flip.
+        """
+        if phase == 1:
+            if gap_dir == "up":
+                return "BUY PUTS", "#f85149"    # gap up → sell off → puts
+            else:
+                return "BUY CALLS", "#3fb950"   # gap down → rally to fill → calls
+        else:
+            if gap_dir == "up":
+                return "FLIP → CALLS", "#3fb950"
+            else:
+                return "FLIP → PUTS", "#f85149"
+
+    def fill_status(pct: float) -> tuple[str, str]:
+        """Returns (status_label, color) based on fill progress %."""
+        if pct >= 90:
+            return "FILLED — EXIT NOW", "#ffd633"
+        if pct >= 70:
+            return "NEAR FILL — HOLD", "#3fb950"
+        if pct >= 40:
+            return "FILLING — In Motion", "#d29922"
+        if pct >= 10:
+            return "In Progress", "#58a6ff"
+        return "Approaching", "#8b949e"
+
+    def calc_fill_pct(open_price: float, fill_level: float, current: float | None) -> float:
+        if current is None or open_price == fill_level:
+            return 0.0
+        try:
+            dist_total = abs(fill_level - open_price)
+            dist_done  = abs(current - open_price)
+            return min(dist_done / dist_total * 100, 100)
+        except Exception:
+            return 0.0
+
+    # ── Alert header ──────────────────────────────────────────────────────────
     n_gaps  = len(gap_today)
     n_watch = sum(1 for _, tod, _ in gap_today if tod.signal == "WATCH_FILL")
     n_near  = sum(1 for _, tod, _ in gap_today if tod.signal == "NEAR_FILL")
+    actionable = [
+        (tkr, tod, sb) for tkr, tod, sb in gap_today
+        if tod.signal in ("WATCH_FILL", "NEAR_FILL")
+    ]
 
     if n_gaps == 0:
-        banner_c = "#8b949e"
-        banner_title = "No Gaps Today"
-        banner_msg   = f"All {len(today_rows)} tickers opened near yesterday's close — nothing to watch."
-    elif n_watch > 0:
-        banner_c = "#3fb950"
-        banner_title = f"{n_watch} WATCH_FILL Setup{'s' if n_watch>1 else ''}"
-        fill_tickers = [tkr for tkr, tod, _ in gap_today if tod.signal == "WATCH_FILL"]
-        banner_msg = f"High probability fill expected: <strong>{', '.join(fill_tickers)}</strong>. Watch the fill level for entry."
-    elif n_near > 0:
-        banner_c = "#d29922"
-        banner_title = f"{n_near} NEAR_FILL Setup{'s' if n_near>1 else ''}"
-        fill_tickers = [tkr for tkr, tod, _ in gap_today if tod.signal == "NEAR_FILL"]
-        banner_msg = f"Moderate fill probability: <strong>{', '.join(fill_tickers)}</strong>. Worth monitoring."
+        st.markdown(
+            f"""<div style="background:#161b22;border:1px solid #30363d;
+                            border-radius:12px;padding:20px 24px;margin-bottom:20px;
+                            text-align:center;">
+              <div style="font-size:15px;font-weight:700;color:#8b949e;">
+                No Gaps Today — {datetime.now().strftime('%A %b %d')}</div>
+              <div style="font-size:13px;color:#6e7681;margin-top:6px;">
+                All {len(today_rows)} tickers opened near yesterday's close. Nothing to trade. Stand by.</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
     else:
-        banner_c = "#58a6ff"
-        banner_title = f"{n_gaps} Gap{'s' if n_gaps>1 else ''} — Monitor"
-        banner_msg = "Gaps detected but fill probability below threshold."
+        alert_c = "#3fb950" if n_watch > 0 else "#d29922" if n_near > 0 else "#58a6ff"
+        alert_bg = (
+            "linear-gradient(135deg,#0d1f14,#0a1a0f)" if n_watch > 0
+            else "linear-gradient(135deg,#1a1208,#131008)"
+            if n_near > 0 else "linear-gradient(135deg,#0a1428,#0d1f36)"
+        )
+        alert_title = (
+            f"TRADE ALERT — {n_watch} High-Probability Gap{'s' if n_watch>1 else ''}" if n_watch > 0
+            else f"MONITOR — {n_near} Gap Setup{'s' if n_near>1 else ''}" if n_near > 0
+            else f"{n_gaps} Gap{'s' if n_gaps>1 else ''} Detected — Low Probability"
+        )
+        best_setups = [tkr for tkr, tod, _ in gap_today if tod.signal in ("WATCH_FILL","NEAR_FILL")]
+        summary_line = (
+            f"High-confidence setups active: <strong style='color:#fff;'>{', '.join(best_setups)}</strong>"
+            if best_setups else "Gaps open but historical fill rate below threshold."
+        )
+        st.markdown(
+            f"""<div style="background:{alert_bg};border:2px solid {alert_c};
+                            border-radius:14px;padding:20px 28px;margin-bottom:24px;">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                <div style="font-size:11px;font-weight:900;color:{alert_c};
+                            text-transform:uppercase;letter-spacing:.1em;">
+                  {datetime.now().strftime('%A %b %d · %H:%M')} ET</div>
+              </div>
+              <div style="font-size:22px;font-weight:900;color:{alert_c};
+                          margin-bottom:8px;line-height:1.1;">{alert_title}</div>
+              <div style="font-size:13px;color:#c9d1d9;">{summary_line}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
 
-    st.markdown(
-        f"""<div style="background:rgba(22,27,34,0.9);border-left:4px solid {banner_c};
-                        border-radius:0 10px 10px 0;padding:16px 20px;margin-bottom:20px;">
-          <div style="font-size:16px;font-weight:800;color:{banner_c};margin-bottom:4px;">
-            {banner_title}</div>
-          <div style="font-size:13px;color:#c9d1d9;">{banner_msg}</div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    # ── Today's gap cards ─────────────────────────────────────────────────────
+    # ── Action trade cards ─────────────────────────────────────────────────────
     if gap_today:
-        section("Active Gap Setups", f"{datetime.now().strftime('%A %b %d')} — gaps with fill targets")
+        section("Trade Setups", f"{datetime.now().strftime('%A %b %d')} · Gap fill & reversal plays")
         n_cols = min(len(gap_today), 3)
         cols = st.columns(n_cols)
+
         for i, (tkr, tod, _) in enumerate(gap_today):
-            sig_c   = gap_signal_color(tod.signal)
-            is_up   = tod.gap_dir == "up"
-            dir_c   = "#3fb950" if is_up else "#f85149"
-            dir_str = f"↑ GAP UP {tod.gap_pct*100:+.2f}%" if is_up else f"↓ GAP DOWN {tod.gap_pct*100:+.2f}%"
-            fill_r  = f"{tod.hist_fill_rate*100:.0f}%" if tod.hist_fill_rate is not None else "—"
-            rev_r   = f"{tod.hist_rev_rate*100:.0f}%" if tod.hist_rev_rate is not None else "—"
-            med_rev = f"{tod.hist_med_rev_pts:+.2f} pts" if tod.hist_med_rev_pts is not None else "—"
-            # Use live Polygon price if available, otherwise no progress shown
-            live_snap   = gap_live.get(tkr, {})
-            live_cur    = live_snap.get("last_price") or None
-            progress    = fill_progress_bar(tod.open_price, tod.fill_level, live_cur)
+            is_up     = tod.gap_dir == "up"
+            sig_c     = gap_signal_color(tod.signal)
+            dir_c     = "#f85149" if is_up else "#3fb950"
+            dir_str   = f"↑ GAP UP  {tod.gap_pct*100:+.2f}%" if is_up else f"↓ GAP DOWN  {tod.gap_pct*100:+.2f}%"
+            action_lbl, action_c = gap_trade_action(tod.gap_dir, 1)
+
+            # Live price data
+            live_snap  = gap_live.get(tkr, {})
+            live_cur   = live_snap.get("last_price") or None
+            live_badge = (
+                f'<span style="font-size:9px;font-weight:900;color:#3fb950;'
+                f'background:#0d1f14;padding:2px 5px;border-radius:3px;'
+                f'margin-left:6px;">LIVE</span>'
+                if live_snap else ""
+            )
+
+            # Fill progress
+            fp = calc_fill_pct(tod.open_price, tod.fill_level, live_cur)
+            fp_status, fp_color = fill_status(fp)
+            bar_c = fp_color
+
+            # Remaining points to fill
+            if live_cur is not None:
+                pts_to_fill = abs(live_cur - tod.fill_level)
+                entry_price = live_cur
+            else:
+                pts_to_fill = abs(tod.open_price - tod.fill_level)
+                entry_price = tod.open_price
+
+            atm_strike = round(entry_price)  # nearest $1 strike for 0DTE
+
+            # Phase 2 (post-fill reversal) recommendation
+            show_phase2 = (
+                tod.hist_rev_rate is not None and tod.hist_rev_rate >= 0.55
+                and tod.hist_med_rev_pts is not None
+            )
+            phase2_lbl, phase2_c = gap_trade_action(tod.gap_dir, 2)
+            phase2_pts = abs(tod.hist_med_rev_pts) if tod.hist_med_rev_pts is not None else 0.0
+            phase2_target = (
+                tod.fill_level + phase2_pts if is_up      # gap-up fills → price may bounce up
+                else tod.fill_level - phase2_pts           # gap-down fills → price may drop
+            )
+
+            # Confidence badge
+            fill_r_str  = f"{tod.hist_fill_rate*100:.0f}%" if tod.hist_fill_rate is not None else "—"
+            rev_r_str   = f"{tod.hist_rev_rate*100:.0f}%" if tod.hist_rev_rate is not None else "—"
+            conf_str    = (
+                "HIGH" if (tod.hist_fill_rate or 0) >= 0.70
+                else "MED" if (tod.hist_fill_rate or 0) >= 0.50
+                else "LOW"
+            )
+            conf_c = "#3fb950" if conf_str == "HIGH" else "#d29922" if conf_str == "MED" else "#6e7681"
+
+            phase2_html = (
+                f"""<div style="background:rgba(255,255,255,0.04);border-radius:8px;
+                                padding:10px 12px;margin-top:10px;border-left:3px solid {phase2_c};">
+                      <div style="font-size:9px;font-weight:900;color:#8b949e;
+                                  text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
+                        Phase 2 · After Fill</div>
+                      <div style="font-size:14px;font-weight:900;color:{phase2_c};">
+                        {phase2_lbl}</div>
+                      <div style="font-size:11px;color:#c9d1d9;margin-top:2px;">
+                        at fill level ${tod.fill_level:.2f} →
+                        target ${phase2_target:.2f}
+                        <span style="color:{phase2_c};">(+{phase2_pts:.1f} pts)</span></div>
+                      <div style="font-size:10px;color:#8b949e;margin-top:2px;">
+                        Reversal after fill: {rev_r_str} historically</div>
+                    </div>"""
+                if show_phase2 else ""
+            )
 
             with cols[i % n_cols]:
                 st.markdown(
                     f"""
-                    <div style="background:#161b22;border:2px solid {sig_c};
-                                border-radius:14px;padding:18px 16px;margin-bottom:12px;">
+                    <div style="background:#0d1117;border:2px solid {sig_c};
+                                border-radius:16px;padding:20px 18px;margin-bottom:12px;
+                                box-shadow:0 0 24px {sig_c}33;">
+
+                      <!-- Header row -->
                       <div style="display:flex;justify-content:space-between;
-                                  align-items:baseline;margin-bottom:6px;">
-                        <span style="font-size:22px;font-weight:900;color:#fff;">{tkr}</span>
-                        <span style="background:{sig_c}22;color:{sig_c};font-size:9px;
-                                     font-weight:900;padding:3px 8px;border-radius:4px;
-                                     letter-spacing:.05em;">{tod.signal}</span>
+                                  align-items:center;margin-bottom:10px;">
+                        <div>
+                          <span style="font-size:26px;font-weight:900;color:#fff;
+                                       letter-spacing:-.01em;">{tkr}</span>
+                          {live_badge}
+                        </div>
+                        <div style="text-align:right;">
+                          <span style="background:{conf_c}22;color:{conf_c};font-size:9px;
+                                       font-weight:900;padding:3px 8px;border-radius:4px;
+                                       letter-spacing:.07em;">{conf_str} CONF</span>
+                        </div>
                       </div>
-                      <div style="font-size:15px;font-weight:800;color:{dir_c};
-                                  margin-bottom:8px;">{dir_str} · {tod.gap_pts:+.2f} pts</div>
-                      {progress}
-                      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
-                                  gap:8px;font-size:11px;margin-top:12px;">
-                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
-                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Fill Rate</div>
-                          <div style="color:#ffd633;font-size:16px;font-weight:800;">{fill_r}</div>
+
+                      <!-- Gap direction -->
+                      <div style="font-size:13px;font-weight:800;color:{dir_c};
+                                  margin-bottom:12px;">{dir_str} · {tod.gap_pts:+.2f} pts</div>
+
+                      <!-- Action box -->
+                      <div style="background:{action_c}18;border:2px solid {action_c};
+                                  border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+                        <div style="font-size:10px;font-weight:900;color:#8b949e;
+                                    text-transform:uppercase;letter-spacing:.1em;
+                                    margin-bottom:6px;">Phase 1 · Ride the Fill</div>
+                        <div style="font-size:28px;font-weight:900;color:{action_c};
+                                    line-height:1;margin-bottom:10px;">{action_lbl}</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                          <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
+                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                                        font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Entry</div>
+                            <div style="font-size:18px;font-weight:900;color:#fff;">
+                              ${entry_price:.2f}</div>
+                            <div style="font-size:9px;color:#8b949e;">ATM ~${atm_strike}</div>
+                          </div>
+                          <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
+                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                                        font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Target</div>
+                            <div style="font-size:18px;font-weight:900;color:{action_c};">
+                              ${tod.fill_level:.2f}</div>
+                            <div style="font-size:9px;color:#8b949e;">prev close</div>
+                          </div>
+                          <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
+                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                                        font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Potential</div>
+                            <div style="font-size:18px;font-weight:900;color:#ffd633;">
+                              {pts_to_fill:.2f}</div>
+                            <div style="font-size:9px;color:#8b949e;">pts remaining</div>
+                          </div>
                         </div>
-                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
-                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Rev After</div>
-                          <div style="color:#ffd633;font-size:16px;font-weight:800;">{rev_r}</div>
+                      </div>
+
+                      <!-- Fill progress bar -->
+                      <div style="margin-bottom:4px;">
+                        <div style="display:flex;justify-content:space-between;
+                                    align-items:center;margin-bottom:4px;">
+                          <span style="font-size:10px;font-weight:900;color:{fp_color};
+                                       text-transform:uppercase;letter-spacing:.07em;">{fp_status}</span>
+                          <span style="font-size:10px;color:#8b949e;">{fp:.0f}% filled</span>
                         </div>
-                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
-                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Med Rev</div>
-                          <div style="color:#58a6ff;font-size:16px;font-weight:800;">{med_rev}</div>
+                        <div style="height:8px;background:rgba(139,148,158,0.15);
+                                    border-radius:4px;overflow:hidden;">
+                          <div style="width:{fp:.0f}%;height:100%;background:{bar_c};
+                                      border-radius:4px;"></div>
                         </div>
+                        <div style="display:flex;justify-content:space-between;
+                                    font-size:9px;color:#8b949e;margin-top:3px;">
+                          <span>Open ${tod.open_price:.2f}</span>
+                          <span>Fill target ${tod.fill_level:.2f}</span>
+                        </div>
+                      </div>
+
+                      <!-- Phase 2 -->
+                      {phase2_html}
+
+                      <!-- Stats footer -->
+                      <div style="display:flex;justify-content:space-between;
+                                  margin-top:12px;padding-top:10px;
+                                  border-top:1px solid rgba(255,255,255,0.06);
+                                  font-size:10px;color:#8b949e;">
+                        <span>Fill rate <strong style="color:#ffd633;">{fill_r_str}</strong></span>
+                        <span>Rev after fill <strong style="color:#ffd633;">{rev_r_str}</strong></span>
+                        <span>n={tod.hist_n_similar}</span>
                       </div>
                     </div>
                     """,
@@ -835,7 +1022,7 @@ elif page == "Gap Reversal":
                 )
 
     if no_gap:
-        st.caption(f"No gap today: {', '.join(t for t, _, _ in no_gap)}")
+        st.caption(f"No gap today ({datetime.now().strftime('%b %d')}): {', '.join(t for t, _, _ in no_gap)} — all opened near yesterday's close.")
 
     # ── Deep-dive ─────────────────────────────────────────────────────────────
     st.markdown("---")
