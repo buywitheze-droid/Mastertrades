@@ -172,14 +172,12 @@ def fmt_dollar(v):
 
 def section(title: str, subtitle: str = ""):
     sub_html = f'<div style="color:#8b949e;font-size:12px;margin-top:2px;">{subtitle}</div>' if subtitle else ""
-    st.markdown(
+    st.html(
         f"""<div style="margin:1.6rem 0 0.8rem;">
           <span style="font-size:17px;font-weight:800;color:#e6edf3;
                        letter-spacing:.01em;">{title}</span>
           {sub_html}
-        </div>""",
-        unsafe_allow_html=True,
-    )
+        </div>""")
 
 
 # ─── Cached data loaders ─────────────────────────────────────────────────────
@@ -380,13 +378,11 @@ PAGE_META = {
 }
 
 with st.sidebar:
-    st.markdown(
+    st.html(
         """<div style="font-size:20px;font-weight:800;color:#fff;
                        letter-spacing:-.01em;margin-bottom:4px;">📈 Mastertrades</div>
            <div style="color:#8b949e;font-size:11px;margin-bottom:16px;">
-             0DTE Options Intelligence</div>""",
-        unsafe_allow_html=True,
-    )
+             0DTE Options Intelligence</div>""")
     st.markdown("---")
     page = st.radio(
         "Navigate",
@@ -405,12 +401,10 @@ with st.sidebar:
     except Exception:
         _default_eq = 500.0
 
-    st.markdown(
+    st.html(
         """<div style="font-size:10px;font-weight:800;color:#8b949e;
                        text-transform:uppercase;letter-spacing:.08em;
-                       margin-bottom:4px;">Account Balance</div>""",
-        unsafe_allow_html=True,
-    )
+                       margin-bottom:4px;">Account Balance</div>""")
     equity_input = st.number_input(
         "Account equity ($)",
         value=_default_eq,
@@ -418,7 +412,7 @@ with st.sidebar:
         step=50.0,
         label_visibility="collapsed",
     )
-    st.markdown(
+    st.html(
         f"""<div style="background:#0d1f14;border:1px solid #3fb950;
                        border-radius:6px;padding:6px 10px;margin-top:2px;
                        margin-bottom:12px;">
@@ -426,9 +420,7 @@ with st.sidebar:
                           font-variant-numeric:tabular-nums;">
                ${equity_input:,.2f}</span>
              <span style="color:#8b949e;font-size:10px;margin-left:6px;">current equity</span>
-           </div>""",
-        unsafe_allow_html=True,
-    )
+           </div>""")
     st.markdown("---")
 
     # Data source status
@@ -439,7 +431,7 @@ with st.sidebar:
         _poly_ok = False
 
     if _poly_ok:
-        st.markdown(
+        st.html(
             f"""<div style="background:#0d1f14;border:1px solid #3fb950;
                            border-radius:8px;padding:10px 12px;margin-bottom:10px;">
                  <div style="font-size:10px;font-weight:800;color:#3fb950;
@@ -450,11 +442,9 @@ with st.sidebar:
                    Live quotes &amp; snapshots<br>
                    <span style="color:#ffd633;">Refreshes every 30 s</span>
                  </div>
-               </div>""",
-            unsafe_allow_html=True,
-        )
+               </div>""")
     else:
-        st.markdown(
+        st.html(
             """<div style="background:#1a1208;border:1px solid #6e7681;
                            border-radius:8px;padding:10px 12px;margin-bottom:10px;">
                  <div style="font-size:10px;font-weight:800;color:#6e7681;
@@ -462,9 +452,7 @@ with st.sidebar:
                    ○ Yahoo Finance (fallback)</div>
                  <div style="font-size:10px;color:#8b949e;">
                    Add POLYGON_API_KEY to enable<br>exchange-quality data</div>
-               </div>""",
-            unsafe_allow_html=True,
-        )
+               </div>""")
 
     st.caption(f"Updated: {datetime.now().strftime('%b %d, %H:%M')}")
     if st.button("🔄 Refresh data", use_container_width=True):
@@ -782,7 +770,7 @@ if page == "Command Center":
           Refreshes every 30 s automatically.
         </div>"""
 
-    st.markdown(
+    st.html(
         f"""<div style="background:{alert_bg};border:2px solid {alert_border};
                         border-radius:16px;padding:22px 26px;margin-bottom:4px;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;
@@ -815,9 +803,7 @@ if page == "Command Center":
           </div>
           {_0dte_alloc_html}
           {strike_section_html}
-        </div>""",
-        unsafe_allow_html=True,
-    )
+        </div>""")
 
     # ── Trade tickets ─────────────────────────────────────────────────────────
     from src.position_sizer import recommend_allocation, compound_projection, TIERS
@@ -876,7 +862,7 @@ if page == "Command Center":
                         f'at this allocation</div>'
                     )
 
-            st.markdown(
+            st.html(
                 f"""
                 <div style="background:{card_bg};border:2px solid {border_c};
                             border-radius:14px;padding:22px 26px;margin-bottom:16px;
@@ -980,9 +966,7 @@ if page == "Command Center":
                   </div>
                   {milestone_html}
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """)
     else:
         # ── SKIP state — rich context card ─────────────────────────────────
         from src.jackpot_scanner import HOT_THRESHOLD, JACKPOT_THRESHOLD
@@ -1042,17 +1026,15 @@ if page == "Command Center":
               </div>
             </div>"""
 
-        st.markdown(
+        st.html(
             f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">'
-            f'{gauge_html}</div>',
-            unsafe_allow_html=True,
-        )
+            f'{gauge_html}</div>')
 
         # ── What would trigger ─────────────────────────────────────────────
         closest = max(rows, key=lambda r: r.p_vol / HOT_THRESHOLD)
         gap_to_hot  = max(HOT_THRESHOLD - closest.p_vol, 0.0)
         gap_to_jack = max(JACKPOT_THRESHOLD - closest.p_pnl, 0.0)
-        st.markdown(
+        st.html(
             f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
                             padding:18px 24px;margin-top:12px;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
@@ -1079,9 +1061,7 @@ if page == "Command Center":
                     P(pnl) ≥ {JACKPOT_THRESHOLD*100:.0f}%</div>
                 </div>
               </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
 
         # ── Today's intraday opportunity ───────────────────────────────────
         live_spy = live_q.get("SPY", {})
@@ -1093,7 +1073,7 @@ if page == "Command Center":
         if spy_drop >= 2.0:
             opp_color = "#ffd633" if spy_drop >= 4.0 else "#d29922"
             opp_bg    = "#1c1a0a" if spy_drop >= 4.0 else "#1a1208"
-            st.markdown(
+            st.html(
                 f"""<div style="background:{opp_bg};border:2px solid {opp_color};
                                 border-radius:12px;padding:18px 24px;margin-top:12px;">
                   <div style="font-size:13px;font-weight:800;color:{opp_color};
@@ -1132,11 +1112,9 @@ if page == "Command Center":
                         0DTE Lottery · Reversal Levels</div>
                     </div>
                   </div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
+                </div>""")
         else:
-            st.markdown(
+            st.html(
                 f"""<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
                                 padding:14px 20px;margin-top:12px;color:#8b949e;font-size:12px;
                                 line-height:1.7;">
@@ -1146,9 +1124,7 @@ if page == "Command Center":
                   <strong style="color:#ffd633;">Reversal Levels</strong> pages to monitor
                   live intraday action. Signals refresh every 5 minutes — use the
                   🔄 button in the sidebar to force a refresh.
-                </div>""",
-                unsafe_allow_html=True,
-            )
+                </div>""")
 
     # ── Compound Growth Projector ──────────────────────────────────────────────
     st.markdown("---")
@@ -1216,7 +1192,7 @@ if page == "Command Center":
                     f'</tr>'
                 )
 
-            st.markdown(
+            st.html(
                 f"""<div style="background:#0d1117;border:1px solid #30363d;
                                 border-radius:14px;padding:22px 26px;margin-bottom:16px;">
 
@@ -1290,9 +1266,7 @@ if page == "Command Center":
                     "All Losses" shows Kelly's downside protection — you keep {100 - _pa_pct}% of equity even on every loss.
                     <strong style="color:#ffd633;">Risk is capped at your allocation — options can only go to $0.</strong>
                   </div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
+                </div>""")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1396,7 +1370,7 @@ elif page == "Scanner":
         )
 
         with cols[i]:
-            st.markdown(
+            st.html(
                 f"""
                 <div style="background:#161b22;border:2px solid {pvol_c};
                             border-radius:14px;padding:20px 18px;
@@ -1434,9 +1408,7 @@ elif page == "Scanner":
                     </div>
                   </div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """)
 
     # ── Full ranked list ──────────────────────────────────────────────────────
     st.markdown("---")
@@ -1489,7 +1461,7 @@ elif page == "Scanner":
             {f"{rsi:.0f}" if not math.isnan(rsi) else "—"}</td>
         </tr>"""
 
-    st.markdown(
+    st.html(
         f"""<div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                       background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -1514,9 +1486,7 @@ elif page == "Scanner":
             </tr>
           </thead>
           <tbody>{tbl_rows_html}</tbody>
-        </table></div>""",
-        unsafe_allow_html=True,
-    )
+        </table></div>""")
     st.caption("Lift = P(vol) ÷ base-rate   ·   Extreme >3.0  ·  High >2.0  ·  Elevated >1.3")
 
 
@@ -1652,7 +1622,7 @@ elif page == "Gap Reversal":
     ]
 
     if n_gaps == 0:
-        st.markdown(
+        st.html(
             f"""<div style="background:#161b22;border:1px solid #30363d;
                             border-radius:12px;padding:20px 24px;margin-bottom:20px;
                             text-align:center;">
@@ -1660,9 +1630,7 @@ elif page == "Gap Reversal":
                 No Gaps Today — {datetime.now().strftime('%A %b %d')}</div>
               <div style="font-size:13px;color:#6e7681;margin-top:6px;">
                 All {len(today_rows)} tickers opened near yesterday's close. Nothing to trade. Stand by.</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
     else:
         alert_c = "#3fb950" if n_watch > 0 else "#d29922" if n_near > 0 else "#58a6ff"
         alert_bg = (
@@ -1680,7 +1648,7 @@ elif page == "Gap Reversal":
             f"High-confidence setups active: <strong style='color:#fff;'>{', '.join(best_setups)}</strong>"
             if best_setups else "Gaps open but historical fill rate below threshold."
         )
-        st.markdown(
+        st.html(
             f"""<div style="background:{alert_bg};border:2px solid {alert_c};
                             border-radius:14px;padding:20px 28px;margin-bottom:24px;">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
@@ -1691,9 +1659,7 @@ elif page == "Gap Reversal":
               <div style="font-size:22px;font-weight:800;color:{alert_c};
                           margin-bottom:8px;line-height:1.1;">{alert_title}</div>
               <div style="font-size:13px;color:#c9d1d9;">{summary_line}</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
 
     # ── Action trade cards ─────────────────────────────────────────────────────
     if gap_today:
@@ -1774,7 +1740,7 @@ elif page == "Gap Reversal":
             )
 
             with cols[i % n_cols]:
-                st.markdown(
+                st.html(
                     f"""
                     <div style="background:#0d1117;border:2px solid {sig_c};
                                 border-radius:16px;padding:20px 18px;margin-bottom:12px;
@@ -1865,9 +1831,7 @@ elif page == "Gap Reversal":
                         <span>n={tod.hist_n_similar}</span>
                       </div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    """)
 
     if no_gap:
         st.caption(f"No gap today ({datetime.now().strftime('%b %d')}): {', '.join(t for t, _, _ in no_gap)} — all opened near yesterday's close.")
@@ -1897,15 +1861,13 @@ elif page == "Gap Reversal":
     k5.metric("Median Rev", f"{tod_detail.hist_med_rev_pts:+.2f} pts" if tod_detail.hist_med_rev_pts else "—")
 
     # Today's signal detail
-    st.markdown(
+    st.html(
         f"""<div style="background:rgba(22,27,34,0.9);border:1px solid {sig_c};
                         border-radius:10px;padding:14px 18px;margin:12px 0 4px;">
           <span style="background:{sig_c};color:#0c1117;font-size:11px;font-weight:800;
                        padding:2px 7px;border-radius:3px;margin-right:8px;">{tod_detail.signal}</span>
           <span style="color:#c9d1d9;font-size:13px;">{tod_detail.signal_detail}</span>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+        </div>""")
 
     # Backtest equity curve
     if len(gap_all) > 5:
@@ -2035,7 +1997,7 @@ elif page == "Account Tracker":
         pct = min(state.current_equity / ms, 1.0) if ms > 0 else 0.0
         bar_c = "#3fb950" if pct >= 1.0 else "#ffd633" if pct >= 0.5 else "#58a6ff"
         done_label = "✅ REACHED" if pct >= 1.0 else f"{pct*100:.1f}% there"
-        st.markdown(
+        st.html(
             f"""
             <div style="background:#161b22;border-radius:10px;
                         padding:14px 18px;margin-bottom:10px;">
@@ -2054,9 +2016,7 @@ elif page == "Account Tracker":
                             border-radius:4px;"></div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """)
 
     # ── Log trade form ────────────────────────────────────────────────────────
     st.markdown("---")
@@ -2188,7 +2148,7 @@ elif page == "Weekday Patterns":
 
     col_best, col_worst = st.columns(2)
     with col_best:
-        st.markdown(
+        st.html(
             f"""<div style="background:#0d1f14;border:2px solid #3fb950;
                             border-radius:12px;padding:20px;text-align:center;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
@@ -2196,11 +2156,9 @@ elif page == "Weekday Patterns":
               <div style="font-size:30px;font-weight:800;color:#3fb950;">{best_day}</div>
               <div style="color:#8b949e;font-size:11px;margin-top:4px;">
                 {'Avg range: ' + fmt_pct(wd_agg.loc[best_day, rng_col]) if rng_col and best_day in wd_agg.index else ""}</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
     with col_worst:
-        st.markdown(
+        st.html(
             f"""<div style="background:#1a1208;border:2px solid #8b949e;
                             border-radius:12px;padding:20px;text-align:center;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
@@ -2208,9 +2166,7 @@ elif page == "Weekday Patterns":
               <div style="font-size:30px;font-weight:800;color:#8b949e;">{worst_day}</div>
               <div style="color:#8b949e;font-size:11px;margin-top:4px;">
                 {'Avg range: ' + fmt_pct(wd_agg.loc[worst_day, rng_col]) if rng_col and worst_day in wd_agg.index else ""}</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
 
     # ── Charts ────────────────────────────────────────────────────────────────
     if rng_col and rng_col in wd_agg.columns:
@@ -2310,17 +2266,17 @@ if page == "Reversal Levels":
         vwap_dev = (day_low - day_vwap) if is_long else (day_high - day_vwap)
         c1, c2, c3, c4, c5 = st.columns(5)
         def metric_card(col, label, value, sub="", color="#fff"):
-            col.markdown(
-                f"""<div style="background:#161b22;border:1px solid #30363d;
-                                border-radius:10px;padding:14px 10px;text-align:center;">
-                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
-                              letter-spacing:.08em;margin-bottom:4px;">{label}</div>
-                  <div style="font-size:22px;font-weight:800;color:{color};
-                              letter-spacing:-.02em;">{value}</div>
-                  {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
-                </div>""",
-                unsafe_allow_html=True,
-            )
+            with col:
+                st.html(
+                    f"""<div style="background:#161b22;border:1px solid #30363d;
+                                    border-radius:10px;padding:14px 10px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                  letter-spacing:.08em;margin-bottom:4px;">{label}</div>
+                      <div style="font-size:22px;font-weight:800;color:{color};
+                                  letter-spacing:-.02em;">{value}</div>
+                      {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
+                    </div>"""
+                )
         metric_card(c1, "Open",  f"${day_open:.2f}",  color="#e6edf3")
         metric_card(c2, "Today's Low",  f"${day_low:.2f}",
                     sub=f"{drop_pts:+.2f} from open", color="#f85149" if drop_pts < 0 else "#3fb950")
@@ -2330,7 +2286,7 @@ if page == "Reversal Levels":
                     sub=f"Low vs VWAP: {day_low-day_vwap:+.2f}", color="#ffd633")
         metric_card(c5, "Price", f"${price:.2f}",
                     sub="LIVE", color="#a5d6ff")
-        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+        st.html("<div style='margin-top:6px'></div>")
 
     # ── PIVOT LEVELS TABLE ────────────────────────────────────────────────────
     st.markdown("---")
@@ -2375,7 +2331,7 @@ if page == "Reversal Levels":
               {"<td></td>" if not is_near else ""}
             </tr>"""
 
-        st.markdown(
+        st.html(
             f"""<div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                           background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -2394,10 +2350,8 @@ if page == "Reversal Levels":
                 </tr>
               </thead>
               <tbody>{rows_html}</tbody>
-            </table></div>""",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+            </table></div>""")
+        st.html("<div style='margin-top:6px'></div>")
 
     # ── DROP BAND BOUNCE TABLE ────────────────────────────────────────────────
     st.markdown("---")
@@ -2446,7 +2400,7 @@ if page == "Reversal Levels":
             +{b.avg_open_to_low_pts:.1f} pts to open</td>
         </tr>"""
 
-    st.markdown(
+    st.html(
         f"""<div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                       background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -2469,9 +2423,7 @@ if page == "Reversal Levels":
             </tr>
           </thead>
           <tbody>{rows_html}</tbody>
-        </table></div>""",
-        unsafe_allow_html=True,
-    )
+        </table></div>""")
 
     # ── PIVOT HISTORICAL TOUCH STATS ─────────────────────────────────────────
     st.markdown("---")
@@ -2496,7 +2448,7 @@ if page == "Reversal Levels":
               <td style="padding:9px 14px;font-size:12px;color:#8b949e;">
                 +{pt.avg_return_to_open_pts:.2f} pts to open avg</td>
             </tr>"""
-        st.markdown(
+        st.html(
             f"""<div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                           background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -2515,9 +2467,7 @@ if page == "Reversal Levels":
                 </tr>
               </thead>
               <tbody>{rows_html}</tbody>
-            </table></div>""",
-            unsafe_allow_html=True,
-        )
+            </table></div>""")
     else:
         st.info("Not enough historical pivot touches to compute stats (need ≥3 touches per level).")
 
@@ -2562,7 +2512,7 @@ if page == "Reversal Levels":
         near_pvt = near_label if pivots and near_label else "—"
         near_prc = near_price if pivots else 0.0
 
-        st.markdown(
+        st.html(
             f"""<div style="background:{sig_bg};border:2px solid {sig_border};
                             border-radius:16px;padding:28px;margin-bottom:16px;">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;
@@ -2627,14 +2577,12 @@ if page == "Reversal Levels":
                   <div style="color:#8b949e;font-size:9px;margin-top:4px;">$1 beyond entry</div>
                 </div>
               </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+            </div>""")
 
         # ── Historical context banner ─────────────────────────────────────────
         if today_band:
             b = today_band
-            st.markdown(
+            st.html(
                 f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
                                 padding:18px 24px;display:flex;flex-wrap:wrap;gap:20px;
                                 align-items:center;">
@@ -2674,9 +2622,7 @@ if page == "Reversal Levels":
                     <div style="font-size:22px;font-weight:800;color:#e6edf3;">
                       {int(b.close_above_open_rate*100)}%</div>
                   </div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
+                </div>""")
     else:
         st.info("Waiting for today's intraday data from Polygon to compute the reversal signal.")
 
@@ -2750,16 +2696,16 @@ if page == "0DTE Lottery":
     if has_live:
         c1, c2, c3, c4 = st.columns(4)
         def lcard(col, lbl, val, sub="", color="#e6edf3"):
-            col.markdown(
-                f"""<div style="background:#161b22;border:1px solid #30363d;
-                                border-radius:10px;padding:14px 10px;text-align:center;">
-                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
-                              letter-spacing:.08em;margin-bottom:4px;">{lbl}</div>
-                  <div style="font-size:22px;font-weight:800;color:{color};">{val}</div>
-                  {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
-                </div>""",
-                unsafe_allow_html=True,
-            )
+            with col:
+                st.html(
+                    f"""<div style="background:#161b22;border:1px solid #30363d;
+                                    border-radius:10px;padding:14px 10px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                  letter-spacing:.08em;margin-bottom:4px;">{lbl}</div>
+                      <div style="font-size:22px;font-weight:800;color:{color};">{val}</div>
+                      {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
+                    </div>"""
+                )
         lcard(c1, "Open",  f"${day_open:.2f}",  color="#e6edf3")
         lcard(c2, "Intraday Low", f"${day_low:.2f}",
               sub=f"Drop: {drop_pts:+.2f} pts from open",
@@ -2770,7 +2716,7 @@ if page == "0DTE Lottery":
         lcard(c4, "VWAP", f"${day_vwap:.2f}",
               sub=f"Price vs VWAP: {price-day_vwap:+.2f}",
               color="#ffd633")
-        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+        st.html("<div style='margin-top:6px'></div>")
 
     # ── Fetch live options chain ──────────────────────────────────────────────
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -2809,7 +2755,7 @@ if page == "0DTE Lottery":
         else "No 1000%+ Contracts Yet Today"
     )
 
-    st.markdown(
+    st.html(
         f"""<div style="background:{hero_bg};border:2px solid {hero_border};
                         border-radius:14px;padding:22px 28px;margin-bottom:20px;">
           <div style="font-size:24px;font-weight:800;color:{hero_color};
@@ -2840,9 +2786,7 @@ if page == "0DTE Lottery":
                 {drop_pts:+.1f} pts</div>
             </div>
           </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+        </div>""")
 
     # ── Live options chain table ──────────────────────────────────────────────
     st.markdown("---")
@@ -2886,7 +2830,7 @@ if page == "0DTE Lottery":
                 Δ{c.delta:.2f}  IV{c.implied_vol*100:.0f}%</td>
             </tr>"""
 
-        st.markdown(
+        st.html(
             f"""<div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                           background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -2911,9 +2855,7 @@ if page == "0DTE Lottery":
                 </tr>
               </thead>
               <tbody>{rows_html}</tbody>
-            </table></div>""",
-            unsafe_allow_html=True,
-        )
+            </table></div>""")
     else:
         st.info("No contracts in range — options chain may not be available yet or market is closed.")
 
@@ -2956,11 +2898,9 @@ if page == "0DTE Lottery":
                   <div style="color:#8b949e;font-size:10px;margin-top:6px;">
                     {r.note}</div>
                 </div>"""
-            st.markdown(
-                f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{rec_html}</div>',
-                unsafe_allow_html=True,
-            )
-        st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+            st.html(
+                f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{rec_html}</div>')
+        st.html("<div style='margin-top:8px'></div>")
 
     # ── Historical pattern table ──────────────────────────────────────────────
     st.markdown("---")
@@ -3020,7 +2960,7 @@ if page == "0DTE Lottery":
           <td style="padding:9px 14px;font-size:11px;color:#8b949e;">{note}</td>
         </tr>"""
 
-    st.markdown(
+    st.html(
         f"""<div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
                       background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
@@ -3039,15 +2979,13 @@ if page == "0DTE Lottery":
             </tr>
           </thead>
           <tbody>{rows_html}</tbody>
-        </table></div>""",
-        unsafe_allow_html=True,
-    )
+        </table></div>""")
 
     # ── How it works explainer ────────────────────────────────────────────────
     st.markdown("---")
     section("How the 1000%+ Setup Works",
             "The math behind today's SPY $737 call: $0.04 → $1.84 = 4,500%")
-    st.markdown(
+    st.html(
         f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
                         padding:24px 28px;font-family:Inter,sans-serif;line-height:1.8;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
@@ -3110,6 +3048,4 @@ if page == "0DTE Lottery":
               Use the Reversal Levels page S3 pivot + VWAP as confluence.
             </div>
           </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+        </div>""")
