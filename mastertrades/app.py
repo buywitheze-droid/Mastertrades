@@ -4,8 +4,9 @@ A Streamlit web app wrapping the Mastertrades Python trading analytics engine.
 Pages:
   1. Command Center   — Today's jackpot signals for SPY/QQQ/IWM/AAPL
   2. Scanner          — Multi-ticker volatility scanner (broader universe)
-  3. Account Tracker  — Equity curve, trades, milestones
-  4. Weekday Patterns — Volatility patterns by day of week
+  3. Gap Reversal     — Gap fill detection and reversal signal scanner
+  4. Account Tracker  — Equity curve, trades, milestones
+  5. Weekday Patterns — Volatility patterns by day of week
 """
 
 from __future__ import annotations
@@ -120,6 +121,17 @@ def load_weekday_data(ticker="SPY", lookback_days=504):
     return daily
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_gap_analysis(ticker: str, lookback_years: int = 5):
+    from src.scanner import fetch_or_load_daily
+    from src.gap_analysis import run_gap_analysis
+    daily = fetch_or_load_daily(ticker, data_dir=DATA_DIR, refresh=True)
+    df_feat, stats_bucket, stats_dir, stats_wd, today = run_gap_analysis(
+        ticker, daily, lookback_years=lookback_years
+    )
+    return df_feat, stats_bucket, stats_dir, stats_wd, today
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_account():
     from src.account_state import load_state
@@ -133,7 +145,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigate",
-        ["Command Center", "Scanner", "Account Tracker", "Weekday Patterns"],
+        ["Command Center", "Scanner", "Gap Reversal", "Account Tracker", "Weekday Patterns"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -394,7 +406,348 @@ elif page == "Scanner":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PAGE 3: ACCOUNT TRACKER
+#  PAGE 3: GAP REVERSAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "Gap Reversal":
+    st.title("Gap Reversal Scanner")
+    st.caption(
+        "Detect overnight gaps · track historical fill rates · measure post-fill reversals"
+    )
+
+    GAP_UNIVERSE = ["SPY", "QQQ", "IWM", "DIA", "AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
+
+    with st.sidebar:
+        st.markdown("### Settings")
+        gap_tickers = st.multiselect(
+            "Tickers to scan",
+            options=GAP_UNIVERSE + ["META", "AMZN", "GOOGL"],
+            default=["SPY", "QQQ", "IWM", "AAPL", "NVDA"],
+        )
+        lookback_yrs = st.selectbox("History lookback", [3, 5, 10], index=1,
+                                    format_func=lambda v: f"{v} years")
+        detail_ticker = st.selectbox(
+            "Deep-dive ticker", gap_tickers if gap_tickers else ["SPY"], index=0
+        )
+
+    # ── Signal colour helpers ─────────────────────────────────────────────────
+    def gap_signal_color(sig: str) -> str:
+        return {
+            "WATCH_FILL": "#3fb950",
+            "NEAR_FILL":  "#d29922",
+            "MONITOR":    "#58a6ff",
+            "NO_GAP":     "#8b949e",
+            "SMALL_GAP":  "#6e7681",
+        }.get(sig, "#8b949e")
+
+    def gap_dir_label(d: str, pct: float) -> str:
+        if d == "up":
+            return f"↑ Gap Up  {pct*100:+.2f}%"
+        if d == "down":
+            return f"↓ Gap Down {pct*100:+.2f}%"
+        return "— No Gap"
+
+    # ── Multi-ticker today's gap scan ─────────────────────────────────────────
+    st.subheader("Today's Gaps")
+
+    if not gap_tickers:
+        st.warning("Select at least one ticker in the sidebar.")
+        st.stop()
+
+    today_rows = []
+    load_errors = []
+    for tkr in gap_tickers:
+        with st.spinner(f"Loading {tkr}…"):
+            try:
+                _, sb, _, _, tod = load_gap_analysis(tkr, lookback_yrs)
+                today_rows.append((tkr, tod, sb))
+            except Exception as exc:
+                load_errors.append(f"{tkr}: {exc}")
+
+    if load_errors:
+        with st.expander(f"⚠️ {len(load_errors)} error(s)"):
+            for e in load_errors:
+                st.text(e)
+
+    # Filter to only tickers with a real gap today
+    gap_today = [(tkr, tod, sb) for tkr, tod, sb in today_rows
+                 if tod.gap_dir in ("up", "down")]
+    no_gap    = [(tkr, tod, sb) for tkr, tod, sb in today_rows
+                 if tod.gap_dir not in ("up", "down")]
+
+    if gap_today:
+        n_cols = min(len(gap_today), 3)
+        cols = st.columns(n_cols)
+        for i, (tkr, tod, _) in enumerate(gap_today):
+            sig_c  = gap_signal_color(tod.signal)
+            dir_lbl = gap_dir_label(tod.gap_dir, tod.gap_pct)
+            fill_r  = f"{tod.hist_fill_rate*100:.0f}%" if tod.hist_fill_rate is not None else "—"
+            rev_r   = f"{tod.hist_rev_rate*100:.0f}%" if tod.hist_rev_rate is not None else "—"
+            med_rev = f"{tod.hist_med_rev_pts:+.2f} pts" if tod.hist_med_rev_pts is not None else "—"
+            fill_lvl = f"{tod.fill_level:.2f}"
+            with cols[i % n_cols]:
+                st.markdown(
+                    f"""
+                    <div style="background:#161b22;border:2px solid {sig_c};
+                                border-radius:12px;padding:18px 16px;margin-bottom:12px;">
+                      <div style="display:flex;justify-content:space-between;
+                                  align-items:baseline;margin-bottom:8px;">
+                        <span style="font-size:22px;font-weight:900;color:#fff;">{tkr}</span>
+                        <span style="background:{sig_c};color:#0c1117;font-size:10px;
+                                     font-weight:800;padding:3px 8px;border-radius:4px;
+                                     letter-spacing:.05em;">{tod.signal}</span>
+                      </div>
+                      <div style="font-size:16px;font-weight:700;
+                                  color:{'#3fb950' if tod.gap_dir=='up' else '#f85149'};
+                                  margin-bottom:10px;">{dir_lbl}</div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;
+                                  gap:8px;font-size:12px;">
+                        <div>
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Fill Target</div>
+                          <div style="color:#fff;font-weight:700;">${fill_lvl}</div>
+                        </div>
+                        <div>
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Gap Pts</div>
+                          <div style="color:{'#3fb950' if tod.gap_dir=='up' else '#f85149'};font-weight:700;">
+                            {tod.gap_pts:+.2f}</div>
+                        </div>
+                        <div>
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Hist Fill Rate</div>
+                          <div style="color:#ffd633;font-weight:700;">{fill_r}</div>
+                        </div>
+                        <div>
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Rev After Fill</div>
+                          <div style="color:#ffd633;font-weight:700;">{rev_r}</div>
+                        </div>
+                        <div style="grid-column:1/-1;">
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Median Reversal</div>
+                          <div style="color:#58a6ff;font-weight:700;">{med_rev}</div>
+                        </div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("No significant gaps detected today across the selected tickers.")
+
+    if no_gap:
+        st.caption(f"No gap: {', '.join(t for t, _, _ in no_gap)}")
+
+    # ── Deep-dive for selected ticker ─────────────────────────────────────────
+    st.markdown("---")
+    st.subheader(f"Deep Dive — {detail_ticker}")
+
+    try:
+        df_feat, stats_bucket, stats_dir, stats_wd, tod_detail = load_gap_analysis(
+            detail_ticker, lookback_yrs
+        )
+    except Exception as exc:
+        st.error(f"Could not load {detail_ticker}: {exc}")
+        st.stop()
+
+    # Today's detail card
+    sig_c = gap_signal_color(tod_detail.signal)
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#0d1117,#1a2133);
+                    border:2px solid {sig_c};border-radius:14px;
+                    padding:22px 26px;margin-bottom:20px;">
+          <div style="color:#8b949e;font-size:11px;letter-spacing:.12em;
+                      text-transform:uppercase;font-weight:700;margin-bottom:6px;">
+            {tod_detail.today_date} — {detail_ticker} Gap Signal
+          </div>
+          <div style="font-size:13px;color:#e6edf3;line-height:1.6;">
+            {tod_detail.signal_detail}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);
+                      gap:16px;margin-top:18px;
+                      padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);">
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Open</div>
+              <div style="color:#fff;font-size:18px;font-weight:700;">
+                ${tod_detail.open_price:.2f}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Fill Level</div>
+              <div style="color:#ffd633;font-size:18px;font-weight:700;">
+                ${tod_detail.fill_level:.2f}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Gap Size</div>
+              <div style="color:{'#3fb950' if tod_detail.gap_dir=='up' else '#f85149' if tod_detail.gap_dir=='down' else '#8b949e'};
+                          font-size:18px;font-weight:700;">
+                {tod_detail.gap_pct*100:+.2f}%</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Similar Gaps (hist)</div>
+              <div style="color:#fff;font-size:18px;font-weight:700;">
+                {tod_detail.hist_n_similar}</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Stats by direction ────────────────────────────────────────────────────
+    st.subheader("Fill & Reversal Rates by Direction")
+    if not stats_dir.empty:
+        fmt_dir = stats_dir.copy()
+        for c in ["Fill Rate", "Reversal Rate", "Fill+Rev Rate", "Avg Gap Size", "Avg Rev %"]:
+            if c in fmt_dir.columns:
+                fmt_dir[c] = fmt_dir[c].apply(
+                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
+                )
+        for c in ["Avg Rev Pts", "Med Rev Pts"]:
+            if c in fmt_dir.columns:
+                fmt_dir[c] = fmt_dir[c].apply(
+                    lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
+                )
+        st.dataframe(fmt_dir, use_container_width=True, hide_index=True)
+    else:
+        st.info("Not enough gap history.")
+
+    # ── Stats by bucket ───────────────────────────────────────────────────────
+    st.subheader("Fill & Reversal Rates by Gap Size")
+    if not stats_bucket.empty:
+        sb_display = stats_bucket.copy().reset_index()
+        sb_display.columns = [
+            "Gap Size", "Sessions", "Fill Rate", "Rev Rate (if filled)",
+            "Fill+Rev Rate", "Avg Rev Pts", "Avg Rev %", "Med Rev Pts", "Avg Gap Size"
+        ]
+        for c in ["Fill Rate", "Rev Rate (if filled)", "Fill+Rev Rate", "Avg Rev %", "Avg Gap Size"]:
+            if c in sb_display.columns:
+                sb_display[c] = sb_display[c].apply(
+                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
+                )
+        for c in ["Avg Rev Pts", "Med Rev Pts"]:
+            if c in sb_display.columns:
+                sb_display[c] = sb_display[c].apply(
+                    lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
+                )
+        if "Sessions" in sb_display.columns:
+            sb_display["Sessions"] = sb_display["Sessions"].apply(
+                lambda v: int(v) if pd.notna(v) else "—"
+            )
+        st.dataframe(sb_display, use_container_width=True, hide_index=True)
+
+        # Fill rate bar chart
+        fill_chart = stats_bucket[["fill_rate", "fill_then_rev"]].copy().dropna()
+        if not fill_chart.empty:
+            fill_chart.columns = ["Fill Rate", "Fill+Reversal Rate"]
+            fill_chart = fill_chart * 100
+            st.subheader("Fill Rate vs Fill+Reversal Rate by Gap Size")
+            st.bar_chart(fill_chart, use_container_width=True)
+
+    # ── Stats by weekday ──────────────────────────────────────────────────────
+    st.subheader("Gap Fill Rates by Weekday")
+    if not stats_wd.empty:
+        wd_display = stats_wd.copy()
+        for c in ["Fill Rate", "Fill+Rev Rate"]:
+            if c in wd_display.columns:
+                wd_display[c] = wd_display[c].apply(
+                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
+                )
+        if "Avg Rev Pts" in wd_display.columns:
+            wd_display["Avg Rev Pts"] = wd_display["Avg Rev Pts"].apply(
+                lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
+            )
+        st.dataframe(wd_display, use_container_width=True, hide_index=True)
+
+    # ── Historical gap sessions log ───────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Recent Gap Sessions")
+    from src.gap_analysis import recent_gap_trades
+    recent = recent_gap_trades(df_feat, n=40)
+    if not recent.empty:
+        # Colour "Filled" and "Reversed" columns
+        for c in ["Gap %", "Gap Pts"]:
+            if c in recent.columns:
+                recent[c] = recent[c].apply(
+                    lambda v: f"{v*100:+.2f}%" if c == "Gap %" and pd.notna(v)
+                    else (f"{v:+.2f}" if pd.notna(v) else "—")
+                )
+        if "Rev Pts" in recent.columns:
+            recent["Rev Pts"] = recent["Rev Pts"].apply(
+                lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
+            )
+        if "Fill Level" in recent.columns:
+            recent["Fill Level"] = recent["Fill Level"].apply(
+                lambda v: f"${v:.2f}" if pd.notna(v) else "—"
+            )
+        if "Close" in recent.columns:
+            recent["Close"] = recent["Close"].apply(
+                lambda v: f"${v:.2f}" if pd.notna(v) else "—"
+            )
+        st.dataframe(recent, use_container_width=True, hide_index=True)
+
+    # ── Reversal magnitude distribution ──────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Reversal Magnitude Distribution (Fill+Reversal Days)")
+    ftr_days = df_feat[df_feat["fill_then_reversal"]].copy()
+    if len(ftr_days) > 5:
+        rev_pts = ftr_days["reversal_pts"].dropna()
+        st.markdown(
+            f"**{len(rev_pts)}** fill+reversal sessions · "
+            f"Median: **{rev_pts.median():+.2f} pts** · "
+            f"Mean: **{rev_pts.mean():+.2f} pts** · "
+            f"P75: **{rev_pts.quantile(0.75):+.2f} pts** · "
+            f"P90: **{rev_pts.quantile(0.90):+.2f} pts**"
+        )
+        # Histogram via Streamlit (bin the data manually)
+        hist_vals, hist_edges = pd.cut(
+            rev_pts, bins=20, retbins=True
+        ).value_counts(sort=False).align(
+            pd.Series(index=pd.cut(rev_pts, bins=20).cat.categories)
+        )
+        hist_df = pd.DataFrame({
+            "Reversal Pts": [f"{e.mid:+.1f}" for e in hist_vals.index],
+            "Count":         hist_vals.fillna(0).astype(int).values,
+        }).set_index("Reversal Pts")
+        st.bar_chart(hist_df, use_container_width=True)
+    else:
+        st.info("Not enough fill+reversal history to show distribution.")
+
+    # ── Gap fill equity curve (backtest) ─────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Cumulative P&L — Gap Fill+Reversal Strategy (1 unit per trade)")
+    st.caption(
+        "Simplified backtest: buy/sell 1 unit at the open on gap days, "
+        "exit at close. Long on gap-down fill+reversal setups, short on gap-up fill+reversal."
+    )
+    gap_all = df_feat[df_feat["gap_dir"].isin(["up", "down"])].copy()
+    if len(gap_all) > 5:
+        # For gap-down: expected bullish reversal → long (reversal_pts > 0 = profit)
+        # For gap-up: expected bearish reversal → short (reversal_pts < 0 = profit for short)
+        gap_all["strategy_pnl"] = 0.0
+        gap_down_fill = (gap_all["gap_dir"] == "down") & gap_all["fill_then_reversal"]
+        gap_up_fill   = (gap_all["gap_dir"] == "up")   & gap_all["fill_then_reversal"]
+        # On fill+reversal days: realised P&L = |reversal_pts|
+        gap_all.loc[gap_down_fill, "strategy_pnl"] = gap_all.loc[gap_down_fill, "reversal_pts"].abs()
+        gap_all.loc[gap_up_fill,   "strategy_pnl"] = gap_all.loc[gap_up_fill,   "reversal_pts"].abs()
+        # On gap days that did NOT fill+reverse: loss = session_return_pct * open (simplified: gap_pts/2)
+        gap_no_ftr = gap_all["gap_dir"].isin(["up","down"]) & ~gap_all["fill_then_reversal"]
+        gap_all.loc[gap_no_ftr, "strategy_pnl"] = -(gap_all.loc[gap_no_ftr, "abs_gap_pct"] * gap_all.loc[gap_no_ftr, "Open"] * 0.5)
+
+        cum_pnl = gap_all["strategy_pnl"].cumsum().rename("Cumulative P&L (pts)")
+        st.line_chart(cum_pnl, use_container_width=True)
+
+        win_rate = gap_all["fill_then_reversal"].mean()
+        avg_win  = gap_all.loc[gap_all["fill_then_reversal"], "strategy_pnl"].mean()
+        avg_loss = gap_all.loc[~gap_all["fill_then_reversal"], "strategy_pnl"].mean()
+        total_pnl = gap_all["strategy_pnl"].sum()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Win Rate",   f"{win_rate*100:.1f}%")
+        c2.metric("Avg Win",    f"{avg_win:+.2f} pts" if pd.notna(avg_win) else "—")
+        c3.metric("Avg Loss",   f"{avg_loss:+.2f} pts" if pd.notna(avg_loss) else "—")
+        c4.metric("Total P&L",  f"{total_pnl:+.1f} pts")
+    else:
+        st.info("Not enough gap history for backtest.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PAGE 4: ACCOUNT TRACKER
 # ══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Account Tracker":
