@@ -1,45 +1,64 @@
-# [Project name]
+# Mastertrades
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A trading analytics and volatility-scanning web app built from the Mastertrades Python project. Uses ML models to predict volatile days for ETFs/stocks and generate 0DTE options trading signals (GO_JACKPOT, GO_ULTRA_JACKPOT, GO_HOT, SKIP).
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `cd mastertrades && streamlit run app.py --server.port 5000 --server.enableCORS false --server.enableXsrfProtection false` — run the Streamlit app
+- Or use the "Mastertrades" workflow (auto-configured)
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11, Streamlit
+- Data: yfinance (Yahoo Finance OHLCV)
+- ML: scikit-learn (Logistic Regression, Gradient Boosting)
+- Analytics: pandas, numpy, scipy
+- Model cache: joblib
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `mastertrades/app.py` — main Streamlit app (4 pages)
+- `mastertrades/src/` — Python analytics engine (copied from Mastertrades repo)
+- `mastertrades/data/` — cached OHLCV CSV files (gitignored)
+- `mastertrades/models/` — cached joblib ML models (gitignored)
+- `mastertrades/.streamlit/config.toml` — Streamlit server config
+
+## Pages
+
+1. **Command Center** — Today's jackpot signals for SPY/QQQ/IWM/AAPL with hero verdict card and trade tickets
+2. **Scanner** — Multi-ticker volatility scanner across 12+ tickers, ranked by P(volatile day)
+3. **Account Tracker** — Log trades, track equity curve and milestones ($500→$5k→$50k→$500k)
+4. **Weekday Patterns** — Volatility analysis by day of week (most volatile vs flattest)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- All Python: Streamlit wraps the existing Mastertrades src/ modules directly
+- Models are cached in `models/` with 7-day expiry; data cached in `data/` with 15-min expiry
+- `@st.cache_data(ttl=...)` used throughout for in-process caching
+- CORS/XsrfProtection disabled to work behind Replit's proxy
+- Working directory is `mastertrades/` so `from src.X import Y` resolves correctly
 
-## Product
+## Signals
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **GO_ULTRA_JACKPOT** 🌟 — Both vol + P&L classifiers fire at highest confidence (ULTRA tier)
+- **GO_JACKPOT** ✅ — Both vol + direct-P&L classifiers fire (trade day)
+- **GO_HOT** 🔥 — Vol classifier fires alone (elevated, lower confidence)
+- **SKIP** ⏭ — Calm expected, skip trading
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Dark theme matching the original Command Center HTML aesthetic
+- Inline HTML cards for signal/verdict displays
+- Sidebar navigation with refresh button
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- First run trains ML models (~60s per ticker) — subsequent runs use cached models
+- Yahoo Finance data is 15-min delayed — labelled as "delayed" in live quotes
+- The `from src.X import Y` imports only work if CWD is `mastertrades/`
+- Streamlit must be started with `--server.enableCORS false --server.enableXsrfProtection false` in Replit
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Source repo: https://github.com/buywitheze-droid/Mastertrades
+- See the `pnpm-workspace` skill for workspace structure
