@@ -43,27 +43,86 @@ MODEL_DIR.mkdir(exist_ok=True)
 
 # ─── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  /* ── Font rendering — prevent pixelation on all HTML cards ── */
-  * {
+  /* ── Load Inter and override Streamlit's default Source Sans Pro everywhere ── */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  html, body,
+  [class*="css"],
+  .stMarkdown, .stMarkdown *,
+  .stText, .stText *,
+  p, span, div, label, button, input, select, textarea,
+  h1, h2, h3, h4, h5, h6,
+  [data-testid] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Helvetica, Arial, sans-serif !important;
     -webkit-font-smoothing: antialiased !important;
     -moz-osx-font-smoothing: grayscale !important;
     text-rendering: optimizeLegibility !important;
+    font-feature-settings: "kern" 1, "liga" 1 !important;
   }
+
+  /* ── Streamlit metric widget ── */
+  [data-testid="metric-container"] {
+    background: #161b22;
+    border-radius: 10px;
+    padding: 12px 16px !important;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  [data-testid="stMetricValue"] > div {
+    font-size: 22px !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.02em !important;
+  }
+  [data-testid="stMetricLabel"] > div {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+    color: #8b949e !important;
+  }
+  [data-testid="stMetricDelta"] > div { font-size: 12px !important; font-weight: 600 !important; }
+
+  /* ── Dataframe headers ── */
+  thead tr th {
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: .07em !important;
+    color: #8b949e !important;
+  }
+  tbody tr td { font-size: 12px !important; font-weight: 500 !important; }
+
+  /* ── Sidebar labels ── */
+  .stSidebar label, .stSidebar .stMarkdown { font-size: 12px !important; font-weight: 500 !important; }
+
   /* ── Layout ── */
   .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
-  /* ── Metric cards ── */
-  [data-testid="metric-container"] { background: #161b22; border-radius: 10px;
-    padding: 12px 16px !important; border: 1px solid rgba(255,255,255,0.08); }
-  [data-testid="metric-container"] * { font-smoothing: antialiased !important; }
-  /* ── Dataframe headers ── */
-  thead tr th { font-size: 11px !important; text-transform: uppercase;
-    letter-spacing: .06em !important; color: #8b949e !important; }
-  /* ── Chrome iframe/embedded font fix ── */
-  .stMarkdown, .stMarkdown p, .stMarkdown div { font-smooth: always !important; }
+
   /* ── Hide chrome ── */
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
+
+  /* ── Force Inter onto every inline HTML card (div with style attr) ── */
+  .stMarkdown div[style], .stMarkdown span[style] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Helvetica, Arial, sans-serif !important;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+  }
+  /* ── Sharper section headers injected via st.markdown ── */
+  .stMarkdown > div > div > div {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Helvetica, Arial, sans-serif !important;
+  }
+  /* ── Sidebar widgets ── */
+  .stSidebar * {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Helvetica, Arial, sans-serif !important;
+  }
   /* ── Section divider ── */
   hr { border-color: rgba(255,255,255,0.06) !important; margin: 1.4rem 0 !important; }
 </style>
@@ -212,7 +271,7 @@ PAGE_META = {
 
 with st.sidebar:
     st.markdown(
-        """<div style="font-size:20px;font-weight:900;color:#fff;
+        """<div style="font-size:20px;font-weight:800;color:#fff;
                        letter-spacing:-.01em;margin-bottom:4px;">📈 Mastertrades</div>
            <div style="color:#8b949e;font-size:11px;margin-bottom:16px;">
              0DTE Options Intelligence</div>""",
@@ -319,7 +378,7 @@ if page == "Command Center":
                           text-transform:uppercase;font-weight:700;margin-bottom:8px;">
                 {datetime.now().strftime('%A, %B %d')} · Today's Verdict
               </div>
-              <div style="font-size:38px;font-weight:900;color:{hero_border};
+              <div style="font-size:38px;font-weight:800;color:{hero_border};
                           margin-bottom:10px;line-height:1;">{signal_label(sig)}</div>
               <div style="font-size:14px;color:#c9d1d9;max-width:520px;line-height:1.5;">
                 {signal_action(sig)}
@@ -327,7 +386,7 @@ if page == "Command Center":
             </div>
             <div style="text-align:right;min-width:140px;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Lead ticker</div>
-              <div style="font-size:32px;font-weight:900;color:#fff;">{best_row.ticker}</div>
+              <div style="font-size:32px;font-weight:800;color:#fff;">{best_row.ticker}</div>
               <div style="color:{hero_border};font-size:13px;font-weight:700;">
                 P(vol) {fmt_pct(best_row.p_vol)} · P(pnl) {fmt_pct(best_row.p_pnl)}
               </div>
@@ -372,19 +431,19 @@ if page == "Command Center":
         glow      = f"box-shadow:0 0 20px {sig_c}55;" if is_trade else ""
         live_badge = (
             f'<span style="background:#0d1f14;color:#3fb950;font-size:8px;'
-            f'font-weight:900;padding:2px 5px;border-radius:3px;'
+            f'font-weight:800;padding:2px 5px;border-radius:3px;'
             f'letter-spacing:.05em;margin-left:4px;">{s_label}</span>'
             if s_label else ""
         )
         hl_row = (
-            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;'
+            f'<div><div style="color:#8b949e;font-size:11px;text-transform:uppercase;'
             f'letter-spacing:.07em;">Day H / L</div>'
             f'<div style="color:#e6edf3;font-weight:700;font-size:11px;">'
             f'{fmt_dollar(day_high)} / {fmt_dollar(day_low)}</div></div>'
             if day_high else ""
         )
         vwap_row = (
-            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;'
+            f'<div><div style="color:#8b949e;font-size:11px;text-transform:uppercase;'
             f'letter-spacing:.07em;">VWAP</div>'
             f'<div style="color:#58a6ff;font-weight:700;">{fmt_dollar(day_vwap)}</div></div>'
             if day_vwap else ""
@@ -397,13 +456,13 @@ if page == "Command Center":
                             border-radius:14px;padding:20px 16px;{glow}">
                   <div style="display:flex;justify-content:space-between;align-items:center;
                               margin-bottom:4px;">
-                    <span style="font-size:24px;font-weight:900;color:#fff;">{row.ticker}</span>
-                    <span style="background:{sig_c};color:#0c1117;font-size:9px;
-                                 font-weight:900;padding:3px 8px;border-radius:4px;
+                    <span style="font-size:24px;font-weight:800;color:#fff;">{row.ticker}</span>
+                    <span style="background:{sig_c};color:#0c1117;font-size:11px;
+                                 font-weight:800;padding:3px 8px;border-radius:4px;
                                  letter-spacing:.05em;">{row.signal.replace("GO_","")}</span>
                   </div>
                   <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:14px;">
-                    <span style="font-size:28px;font-weight:900;color:#fff;">{price_str}</span>
+                    <span style="font-size:28px;font-weight:800;color:#fff;">{price_str}</span>
                     {live_badge}
                   </div>
                   <div style="font-size:15px;font-weight:700;color:{chg_c};margin-bottom:14px;">
@@ -413,19 +472,19 @@ if page == "Command Center":
                   <div style="display:grid;grid-template-columns:1fr 1fr;row-gap:10px;
                               column-gap:8px;font-size:11px;">
                     <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;">P(vol)</div>
                       <div style="color:{sig_c};font-size:16px;font-weight:800;">{fmt_pct(row.p_vol)}</div>
                     </div>
                     <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;">P(pnl)</div>
                       <div style="color:{sig_c};font-size:16px;font-weight:800;">{fmt_pct(row.p_pnl)}</div>
                     </div>
                     {hl_row}
                     {vwap_row}
                     <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;">RSI(14)</div>
                       <div style="color:#e6edf3;font-weight:700;">{rsi_str}</div>
                     </div>
@@ -462,28 +521,28 @@ if page == "Command Center":
                   <div style="display:flex;justify-content:space-between;align-items:center;
                               margin-bottom:16px;">
                     <div>
-                      <div style="color:{border_c};font-size:13px;font-weight:900;
+                      <div style="color:{border_c};font-size:13px;font-weight:800;
                                   text-transform:uppercase;letter-spacing:.07em;">{action_label}</div>
                       <div style="color:#8b949e;font-size:11px;margin-top:2px;">{r.ticker} · 0DTE ATM option</div>
                     </div>
                     <div style="text-align:right;">
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Win Prob</div>
-                      <div style="color:{border_c};font-size:24px;font-weight:900;">{fmt_pct(ticket["win_prob"])}</div>
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;">Win Prob</div>
+                      <div style="color:{border_c};font-size:24px;font-weight:800;">{fmt_pct(ticket["win_prob"])}</div>
                     </div>
                   </div>
                   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
                     <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;margin-bottom:4px;">Strike</div>
                       <div style="color:#fff;font-size:22px;font-weight:800;">{fmt_dollar(ticket["strike"])}</div>
                     </div>
                     <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;margin-bottom:4px;">Contracts</div>
                       <div style="color:#fff;font-size:22px;font-weight:800;">{ticket["n_contracts"]}</div>
                     </div>
                     <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
                                   letter-spacing:.07em;margin-bottom:4px;">Max Risk</div>
                       <div style="color:#f85149;font-size:22px;font-weight:800;">{fmt_dollar(ticket["actual_risk"])}</div>
                     </div>
@@ -591,17 +650,17 @@ elif page == "Scanner":
                   "#3fb950" if (not math.isnan(p_vol) and p_vol >= 0.55) else "#58a6ff")
         rank_badge = ["#1", "#2", "#3"][i]
         live_badge = (
-            f'<span style="background:#0d1f14;color:#3fb950;font-size:8px;font-weight:900;'
+            f'<span style="background:#0d1f14;color:#3fb950;font-size:8px;font-weight:800;'
             f'padding:2px 5px;border-radius:3px;letter-spacing:.05em;margin-left:6px;">{s_label}</span>'
             if s_label else ""
         )
         hl_html = (
-            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;">H / L</div>'
+            f'<div><div style="color:#8b949e;font-size:11px;text-transform:uppercase;">H / L</div>'
             f'<div style="color:#e6edf3;font-weight:700;font-size:11px;">{fmt_dollar(day_high)} / {fmt_dollar(day_low)}</div></div>'
             if day_high else ""
         )
         vwap_html = (
-            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;">VWAP</div>'
+            f'<div><div style="color:#8b949e;font-size:11px;text-transform:uppercase;">VWAP</div>'
             f'<div style="color:#58a6ff;font-weight:700;">{fmt_dollar(day_vwap)}</div></div>'
             if day_vwap else ""
         )
@@ -614,17 +673,17 @@ elif page == "Scanner":
                             box-shadow:0 0 16px {pvol_c}33;">
                   <div style="display:flex;justify-content:space-between;
                               align-items:center;margin-bottom:6px;">
-                    <span style="font-size:22px;font-weight:900;color:#fff;">{tkr}</span>
+                    <span style="font-size:22px;font-weight:800;color:#fff;">{tkr}</span>
                     <span style="color:#8b949e;font-size:13px;font-weight:700;">{rank_badge}</span>
                   </div>
                   <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:2px;">
-                    <span style="font-size:24px;font-weight:900;color:#fff;">{fmt_dollar(live_price)}</span>
+                    <span style="font-size:24px;font-weight:800;color:#fff;">{fmt_dollar(live_price)}</span>
                     {live_badge}
                   </div>
                   <div style="font-size:14px;font-weight:700;color:{chg_c};margin-bottom:12px;">
                     {f"{float(live_chg)*100:+.2f}%" if live_chg is not None and not math.isnan(float(live_chg)) else "—"}
                   </div>
-                  <div style="font-size:36px;font-weight:900;color:{pvol_c};
+                  <div style="font-size:36px;font-weight:800;color:{pvol_c};
                               line-height:1;margin-bottom:4px;">{fmt_pct(p_vol)}</div>
                   <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
                               letter-spacing:.07em;margin-bottom:12px;">P(volatile day)</div>
@@ -639,7 +698,7 @@ elif page == "Scanner":
                     {hl_html}
                     {vwap_html}
                     <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">RSI(14)</div>
+                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;">RSI(14)</div>
                       <div style="color:#e6edf3;font-weight:700;">
                         {f"{rsi:.0f}" if not math.isnan(rsi) else "—"}</div>
                     </div>
@@ -724,7 +783,7 @@ elif page == "Gap Reversal":
             f'  <div style="width:{pct:.0f}%;height:100%;background:{bar_c};'
             f'border-radius:3px;transition:width .3s;"></div></div>'
             f'<div style="display:flex;justify-content:space-between;'
-            f'font-size:9px;color:#8b949e;">'
+            f'font-size:11px;color:#8b949e;">'
             f'<span>Open ${open_price:.2f}</span>'
             f'<span style="color:{bar_c};font-weight:700;">{pct:.0f}% to fill</span>'
             f'<span>Fill ${fill_level:.2f}</span></div>'
@@ -836,11 +895,11 @@ elif page == "Gap Reversal":
             f"""<div style="background:{alert_bg};border:2px solid {alert_c};
                             border-radius:14px;padding:20px 28px;margin-bottom:24px;">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-                <div style="font-size:11px;font-weight:900;color:{alert_c};
+                <div style="font-size:11px;font-weight:800;color:{alert_c};
                             text-transform:uppercase;letter-spacing:.1em;">
                   {datetime.now().strftime('%A %b %d · %H:%M')} ET</div>
               </div>
-              <div style="font-size:22px;font-weight:900;color:{alert_c};
+              <div style="font-size:22px;font-weight:800;color:{alert_c};
                           margin-bottom:8px;line-height:1.1;">{alert_title}</div>
               <div style="font-size:13px;color:#c9d1d9;">{summary_line}</div>
             </div>""",
@@ -864,7 +923,7 @@ elif page == "Gap Reversal":
             live_snap  = gap_live.get(tkr, {})
             live_cur   = live_snap.get("last_price") or None
             live_badge = (
-                f'<span style="font-size:9px;font-weight:900;color:#3fb950;'
+                f'<span style="font-size:11px;font-weight:800;color:#3fb950;'
                 f'background:#0d1f14;padding:2px 5px;border-radius:3px;'
                 f'margin-left:6px;">LIVE</span>'
                 if live_snap else ""
@@ -910,10 +969,10 @@ elif page == "Gap Reversal":
             phase2_html = (
                 f"""<div style="background:rgba(255,255,255,0.04);border-radius:8px;
                                 padding:10px 12px;margin-top:10px;border-left:3px solid {phase2_c};">
-                      <div style="font-size:9px;font-weight:900;color:#8b949e;
+                      <div style="font-size:11px;font-weight:800;color:#8b949e;
                                   text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
                         Phase 2 · After Fill</div>
-                      <div style="font-size:14px;font-weight:900;color:{phase2_c};">
+                      <div style="font-size:14px;font-weight:800;color:{phase2_c};">
                         {phase2_lbl}</div>
                       <div style="font-size:11px;color:#c9d1d9;margin-top:2px;">
                         at fill level ${tod.fill_level:.2f} →
@@ -936,13 +995,13 @@ elif page == "Gap Reversal":
                       <div style="display:flex;justify-content:space-between;
                                   align-items:center;margin-bottom:10px;">
                         <div>
-                          <span style="font-size:26px;font-weight:900;color:#fff;
+                          <span style="font-size:26px;font-weight:800;color:#fff;
                                        letter-spacing:-.01em;">{tkr}</span>
                           {live_badge}
                         </div>
                         <div style="text-align:right;">
-                          <span style="background:{conf_c}22;color:{conf_c};font-size:9px;
-                                       font-weight:900;padding:3px 8px;border-radius:4px;
+                          <span style="background:{conf_c}22;color:{conf_c};font-size:11px;
+                                       font-weight:800;padding:3px 8px;border-radius:4px;
                                        letter-spacing:.07em;">{conf_str} CONF</span>
                         </div>
                       </div>
@@ -954,32 +1013,32 @@ elif page == "Gap Reversal":
                       <!-- Action box -->
                       <div style="background:{action_c}18;border:2px solid {action_c};
                                   border-radius:10px;padding:14px 16px;margin-bottom:12px;">
-                        <div style="font-size:10px;font-weight:900;color:#8b949e;
+                        <div style="font-size:10px;font-weight:800;color:#8b949e;
                                     text-transform:uppercase;letter-spacing:.1em;
                                     margin-bottom:6px;">Phase 1 · Ride the Fill</div>
-                        <div style="font-size:28px;font-weight:900;color:{action_c};
+                        <div style="font-size:28px;font-weight:800;color:{action_c};
                                     line-height:1;margin-bottom:10px;">{action_lbl}</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
                           <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
-                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                            <div style="font-size:11px;color:#8b949e;text-transform:uppercase;
                                         font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Entry</div>
-                            <div style="font-size:18px;font-weight:900;color:#fff;">
+                            <div style="font-size:18px;font-weight:800;color:#fff;">
                               ${entry_price:.2f}</div>
-                            <div style="font-size:9px;color:#8b949e;">ATM ~${atm_strike}</div>
+                            <div style="font-size:11px;color:#8b949e;">ATM ~${atm_strike}</div>
                           </div>
                           <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
-                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                            <div style="font-size:11px;color:#8b949e;text-transform:uppercase;
                                         font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Target</div>
-                            <div style="font-size:18px;font-weight:900;color:{action_c};">
+                            <div style="font-size:18px;font-weight:800;color:{action_c};">
                               ${tod.fill_level:.2f}</div>
-                            <div style="font-size:9px;color:#8b949e;">prev close</div>
+                            <div style="font-size:11px;color:#8b949e;">prev close</div>
                           </div>
                           <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:8px;">
-                            <div style="font-size:9px;color:#8b949e;text-transform:uppercase;
+                            <div style="font-size:11px;color:#8b949e;text-transform:uppercase;
                                         font-weight:700;letter-spacing:.06em;margin-bottom:3px;">Potential</div>
-                            <div style="font-size:18px;font-weight:900;color:#ffd633;">
+                            <div style="font-size:18px;font-weight:800;color:#ffd633;">
                               {pts_to_fill:.2f}</div>
-                            <div style="font-size:9px;color:#8b949e;">pts remaining</div>
+                            <div style="font-size:11px;color:#8b949e;">pts remaining</div>
                           </div>
                         </div>
                       </div>
@@ -988,7 +1047,7 @@ elif page == "Gap Reversal":
                       <div style="margin-bottom:4px;">
                         <div style="display:flex;justify-content:space-between;
                                     align-items:center;margin-bottom:4px;">
-                          <span style="font-size:10px;font-weight:900;color:{fp_color};
+                          <span style="font-size:10px;font-weight:800;color:{fp_color};
                                        text-transform:uppercase;letter-spacing:.07em;">{fp_status}</span>
                           <span style="font-size:10px;color:#8b949e;">{fp:.0f}% filled</span>
                         </div>
@@ -998,7 +1057,7 @@ elif page == "Gap Reversal":
                                       border-radius:4px;"></div>
                         </div>
                         <div style="display:flex;justify-content:space-between;
-                                    font-size:9px;color:#8b949e;margin-top:3px;">
+                                    font-size:11px;color:#8b949e;margin-top:3px;">
                           <span>Open ${tod.open_price:.2f}</span>
                           <span>Fill target ${tod.fill_level:.2f}</span>
                         </div>
@@ -1052,7 +1111,7 @@ elif page == "Gap Reversal":
     st.markdown(
         f"""<div style="background:rgba(22,27,34,0.9);border:1px solid {sig_c};
                         border-radius:10px;padding:14px 18px;margin:12px 0 4px;">
-          <span style="background:{sig_c};color:#0c1117;font-size:9px;font-weight:900;
+          <span style="background:{sig_c};color:#0c1117;font-size:11px;font-weight:800;
                        padding:2px 7px;border-radius:3px;margin-right:8px;">{tod_detail.signal}</span>
           <span style="color:#c9d1d9;font-size:13px;">{tod_detail.signal_detail}</span>
         </div>""",
@@ -1345,7 +1404,7 @@ elif page == "Weekday Patterns":
                             border-radius:12px;padding:20px;text-align:center;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
                           letter-spacing:.1em;margin-bottom:6px;">Most Volatile Day</div>
-              <div style="font-size:30px;font-weight:900;color:#3fb950;">{best_day}</div>
+              <div style="font-size:30px;font-weight:800;color:#3fb950;">{best_day}</div>
               <div style="color:#8b949e;font-size:11px;margin-top:4px;">
                 {'Avg range: ' + fmt_pct(wd_agg.loc[best_day, rng_col]) if rng_col and best_day in wd_agg.index else ""}</div>
             </div>""",
@@ -1357,7 +1416,7 @@ elif page == "Weekday Patterns":
                             border-radius:12px;padding:20px;text-align:center;">
               <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
                           letter-spacing:.1em;margin-bottom:6px;">Calmest Day</div>
-              <div style="font-size:30px;font-weight:900;color:#8b949e;">{worst_day}</div>
+              <div style="font-size:30px;font-weight:800;color:#8b949e;">{worst_day}</div>
               <div style="color:#8b949e;font-size:11px;margin-top:4px;">
                 {'Avg range: ' + fmt_pct(wd_agg.loc[worst_day, rng_col]) if rng_col and worst_day in wd_agg.index else ""}</div>
             </div>""",
