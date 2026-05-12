@@ -397,6 +397,40 @@ with st.sidebar:
     st.caption(PAGE_META[page])
     st.markdown("---")
 
+    # ── Account equity (always visible) ───────────────────────────────────────
+    try:
+        from src.account_state import load_state as _load_acct
+        _acct = _load_acct()
+        _default_eq = float(_acct.current_equity or 500.0)
+    except Exception:
+        _default_eq = 500.0
+
+    st.markdown(
+        """<div style="font-size:10px;font-weight:800;color:#8b949e;
+                       text-transform:uppercase;letter-spacing:.08em;
+                       margin-bottom:4px;">Account Balance</div>""",
+        unsafe_allow_html=True,
+    )
+    equity_input = st.number_input(
+        "Account equity ($)",
+        value=_default_eq,
+        min_value=10.0,
+        step=50.0,
+        label_visibility="collapsed",
+    )
+    st.markdown(
+        f"""<div style="background:#0d1f14;border:1px solid #3fb950;
+                       border-radius:6px;padding:6px 10px;margin-top:2px;
+                       margin-bottom:12px;">
+             <span style="color:#3fb950;font-size:18px;font-weight:800;
+                          font-variant-numeric:tabular-nums;">
+               ${equity_input:,.2f}</span>
+             <span style="color:#8b949e;font-size:10px;margin-left:6px;">current equity</span>
+           </div>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
+
     # Data source status
     try:
         from src.polygon_feed import has_polygon_key, fetch_prev_close
@@ -640,6 +674,37 @@ if page == "Command Center":
         alert_title  = "⏸ 0DTE ALERT — Awaiting Live Data"
         alert_sub    = "Live Polygon data required — check Polygon API key"
 
+    # ── Kelly allocation for the 0DTE alert ───────────────────────────────────
+    from src.position_sizer import recommend_allocation as _rec_alloc
+    _0dte_alloc = _rec_alloc("ENTRY_OPEN", equity_input) if a_status == "ENTRY_OPEN" else None
+    _0dte_alloc_html = ""
+    if _0dte_alloc and a_status == "ENTRY_OPEN":
+        _0dte_alloc_html = (
+            f'<div style="background:rgba(0,0,0,0.4);border:1px solid #ffd633;'
+            f'border-radius:8px;padding:10px 14px;margin-bottom:12px;'
+            f'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">'
+            f'<div>'
+            f'<div style="color:#ffd633;font-size:10px;font-weight:800;text-transform:uppercase;'
+            f'letter-spacing:.07em;">Kelly Allocation — 10% Lottery Play</div>'
+            f'<div style="color:#8b949e;font-size:11px;margin-top:2px;">'
+            f'ML is SKIP · Intraday reversal only · Risk only what you can lose</div>'
+            f'</div>'
+            f'<div style="display:flex;gap:16px;">'
+            f'<div style="text-align:center;">'
+            f'<div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Spend</div>'
+            f'<div style="color:#ffd633;font-size:22px;font-weight:900;">'
+            f'${_0dte_alloc.alloc_dollars:,.2f}</div></div>'
+            f'<div style="text-align:center;">'
+            f'<div style="color:#8b949e;font-size:9px;text-transform:uppercase;">If 1000% hit</div>'
+            f'<div style="color:#3fb950;font-size:22px;font-weight:900;">'
+            f'+${_0dte_alloc.alloc_dollars * 9:,.2f}</div></div>'
+            f'<div style="text-align:center;">'
+            f'<div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Max Loss</div>'
+            f'<div style="color:#f85149;font-size:22px;font-weight:900;">'
+            f'-${_0dte_alloc.max_loss:,.2f}</div></div>'
+            f'</div></div>'
+        )
+
     # Build strike recommendation section
     if a_recs and a_status == "ENTRY_OPEN":
         top3     = a_recs[:3]
@@ -745,64 +810,172 @@ if page == "Command Center":
               </div>
             </div>
           </div>
+          {_0dte_alloc_html}
           {strike_section_html}
         </div>""",
         unsafe_allow_html=True,
     )
 
     # ── Trade tickets ─────────────────────────────────────────────────────────
+    from src.position_sizer import recommend_allocation, compound_projection, TIERS
+    from src.report_jackpot_dashboard import trade_ticket
+
     trade_rows = [r for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
-    if trade_rows:
+    hot_rows   = [r for r in rows if r.signal == "GO_HOT"]
+    all_signal_rows = trade_rows + hot_rows
+
+    if trade_rows or hot_rows:
         st.markdown("---")
-        section("Trade Tickets", "Suggested sizing based on your account settings below")
+        section("Kelly Criterion Trade Plan", f"Position sizing for ${equity_input:,.0f} account — risk only what you allocate")
 
-        with st.sidebar:
-            st.markdown("---")
-            st.markdown("**Trade Sizing**")
-            equity_input = st.number_input("Account equity ($)", value=500.0, min_value=10.0, step=50.0)
-            risk_frac = st.slider("Risk per trade (%)", 5, 25, 10) / 100
+        for r in all_signal_rows:
+            alloc = recommend_allocation(r.signal, equity_input)
+            if alloc is None:
+                continue
+            ticket   = trade_ticket(r, equity_input, alloc.alloc_pct)
+            tier     = alloc.tier
+            is_ultra = r.signal == "GO_ULTRA_JACKPOT"
+            is_hot   = r.signal == "GO_HOT"
+            border_c = "#ffd633" if is_ultra else "#3fb950" if not is_hot else "#d29922"
+            card_bg  = (
+                "linear-gradient(135deg,#1a1208,#2d2008)" if is_ultra
+                else "linear-gradient(135deg,#1f1808,#2e2210)" if is_hot
+                else "linear-gradient(135deg,#0d1f14,#12311e)"
+            )
 
-        from src.report_jackpot_dashboard import trade_ticket
+            # Kelly explanation bar  (quarter-kelly vs full-kelly)
+            full_k_pct  = int(tier.full_kelly * 100)
+            used_k_pct  = int(alloc.alloc_pct * 100)
+            bar_fill_w  = min(int(used_k_pct / full_k_pct * 100), 100) if full_k_pct else 0
 
-        for r in trade_rows:
-            ticket = trade_ticket(r, equity_input, risk_frac)
-            border_c = "#ffd633" if r.signal == "GO_ULTRA_JACKPOT" else "#3fb950"
-            action_label = "⚡ SIZE UP — ULTRA JACKPOT" if r.signal == "GO_ULTRA_JACKPOT" else "✅ TRADE — JACKPOT"
+            # Win / lose scenario strings
+            win_new_fmt  = f"${alloc.new_equity_win:,.2f}"
+            lose_new_fmt = f"${alloc.new_equity_lose:,.2f}"
+
+            ev_color = "#3fb950" if alloc.expected_gain > 0 else "#f85149"
+            ev_label = f"+${alloc.expected_gain:,.2f}" if alloc.expected_gain >= 0 else f"-${abs(alloc.expected_gain):,.2f}"
+
+            # Quick growth milestone line
+            from src.position_sizer import trades_to_milestone
+            next_milestone = next(
+                (m for m in [5_000, 50_000, 500_000] if m > equity_input),
+                None,
+            )
+            milestone_html = ""
+            if next_milestone:
+                n_to_ms = trades_to_milestone(r.signal, equity_input, next_milestone)
+                if n_to_ms is not None:
+                    milestone_html = (
+                        f'<div style="margin-top:10px;color:#8b949e;font-size:11px;">'
+                        f'📈 Expected path to <strong style="color:#ffd633;">'
+                        f'${next_milestone:,.0f}</strong>: '
+                        f'<strong style="color:#e6edf3;">{n_to_ms} wins</strong> '
+                        f'at this allocation</div>'
+                    )
 
             st.markdown(
                 f"""
-                <div style="background:rgba(22,27,34,0.9);border:1px solid {border_c};
-                            border-radius:12px;padding:20px 24px;margin-bottom:14px;
-                            box-shadow:0 0 20px {border_c}22;">
-                  <div style="display:flex;justify-content:space-between;align-items:center;
-                              margin-bottom:16px;">
+                <div style="background:{card_bg};border:2px solid {border_c};
+                            border-radius:14px;padding:22px 26px;margin-bottom:16px;
+                            box-shadow:0 0 24px {border_c}22;">
+
+                  <!-- Header row -->
+                  <div style="display:flex;justify-content:space-between;
+                              align-items:flex-start;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
                     <div>
                       <div style="color:{border_c};font-size:13px;font-weight:800;
-                                  text-transform:uppercase;letter-spacing:.07em;">{action_label}</div>
-                      <div style="color:#8b949e;font-size:11px;margin-top:2px;">{r.ticker} · 0DTE ATM option</div>
+                                  text-transform:uppercase;letter-spacing:.07em;">
+                        {tier.label} — {r.ticker}</div>
+                      <div style="color:#8b949e;font-size:11px;margin-top:3px;
+                                  line-height:1.5;">{tier.rationale}</div>
                     </div>
-                    <div style="text-align:right;">
-                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;">Win Prob</div>
-                      <div style="color:{border_c};font-size:24px;font-weight:800;">{fmt_pct(ticket["win_prob"])}</div>
-                    </div>
-                  </div>
-                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
-                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
-                                  letter-spacing:.07em;margin-bottom:4px;">Strike</div>
-                      <div style="color:#fff;font-size:22px;font-weight:800;">{fmt_dollar(ticket["strike"])}</div>
-                    </div>
-                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
-                                  letter-spacing:.07em;margin-bottom:4px;">Contracts</div>
-                      <div style="color:#fff;font-size:22px;font-weight:800;">{ticket["n_contracts"]}</div>
-                    </div>
-                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
-                      <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
-                                  letter-spacing:.07em;margin-bottom:4px;">Max Risk</div>
-                      <div style="color:#f85149;font-size:22px;font-weight:800;">{fmt_dollar(ticket["actual_risk"])}</div>
+                    <div style="text-align:right;flex-shrink:0;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Win Probability</div>
+                      <div style="color:{border_c};font-size:28px;font-weight:900;
+                                  line-height:1;">{int(tier.win_prob*100)}%</div>
+                      <div style="color:#8b949e;font-size:10px;">{int(tier.avg_win_mult*100-100)}% avg win</div>
                     </div>
                   </div>
+
+                  <!-- Kelly allocation bar -->
+                  <div style="background:rgba(0,0,0,0.3);border-radius:8px;
+                              padding:12px 16px;margin-bottom:16px;">
+                    <div style="display:flex;justify-content:space-between;
+                                align-items:center;margin-bottom:6px;">
+                      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Kelly Allocation
+                        <span style="color:#30363d;margin:0 4px;">·</span>
+                        <span style="color:#8b949e;">Full Kelly = {full_k_pct}% · Using {used_k_pct}%</span>
+                      </div>
+                      <div style="color:{border_c};font-size:22px;font-weight:900;
+                                  font-variant-numeric:tabular-nums;">
+                        ${alloc.alloc_dollars:,.2f}
+                        <span style="font-size:12px;color:#8b949e;">({used_k_pct}%)</span>
+                      </div>
+                    </div>
+                    <div style="height:8px;background:rgba(139,148,158,0.15);
+                                border-radius:4px;overflow:hidden;">
+                      <div style="width:{bar_fill_w}%;height:100%;
+                                  background:{border_c};border-radius:4px;
+                                  box-shadow:0 0 8px {border_c}88;"></div>
+                    </div>
+                  </div>
+
+                  <!-- 4-cell stats grid -->
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);
+                              gap:12px;margin-bottom:14px;">
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;
+                                padding:12px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.06em;margin-bottom:4px;">Spend</div>
+                      <div style="color:#fff;font-size:20px;font-weight:800;">
+                        ${alloc.alloc_dollars:,.0f}</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;
+                                padding:12px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.06em;margin-bottom:4px;">If Avg Win</div>
+                      <div style="color:#3fb950;font-size:20px;font-weight:800;">
+                        +${alloc.win_scenario:,.0f}</div>
+                      <div style="color:#8b949e;font-size:9px;">→ {win_new_fmt}</div>
+                    </div>
+                    <div style="background:rgba(248,81,73,0.08);border-radius:8px;
+                                padding:12px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.06em;margin-bottom:4px;">Max Loss</div>
+                      <div style="color:#f85149;font-size:20px;font-weight:800;">
+                        -${alloc.max_loss:,.0f}</div>
+                      <div style="color:#8b949e;font-size:9px;">→ {lose_new_fmt}</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;
+                                padding:12px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.06em;margin-bottom:4px;">EV per Trade</div>
+                      <div style="color:{ev_color};font-size:20px;font-weight:800;">
+                        {ev_label}</div>
+                      <div style="color:#8b949e;font-size:9px;">
+                        ${alloc.ev_per_dollar:.1f} per $1 risked</div>
+                    </div>
+                  </div>
+
+                  <!-- Strike / contract info from old ticket -->
+                  <div style="display:flex;gap:12px;flex-wrap:wrap;
+                              padding-top:12px;border-top:1px solid rgba(255,255,255,0.07);">
+                    <div style="color:#8b949e;font-size:11px;">
+                      Suggested strike: <strong style="color:#e6edf3;">{fmt_dollar(ticket["strike"])}</strong>
+                    </div>
+                    <div style="color:#30363d;">·</div>
+                    <div style="color:#8b949e;font-size:11px;">
+                      Contracts: <strong style="color:#e6edf3;">{ticket["n_contracts"]}</strong>
+                    </div>
+                    <div style="color:#30363d;">·</div>
+                    <div style="color:#8b949e;font-size:11px;">
+                      Premium/contract: <strong style="color:#e6edf3;">
+                        ${ticket["premium_per_contract"]:.2f}</strong>
+                    </div>
+                  </div>
+                  {milestone_html}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -970,6 +1143,150 @@ if page == "Command Center":
                   <strong style="color:#ffd633;">Reversal Levels</strong> pages to monitor
                   live intraday action. Signals refresh every 5 minutes — use the
                   🔄 button in the sidebar to force a refresh.
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+    # ── Compound Growth Projector ──────────────────────────────────────────────
+    st.markdown("---")
+    section("Compound Growth Projector",
+            f"What happens if you trade every signal — ${equity_input:,.0f} starting balance")
+
+    from src.position_sizer import compound_projection, TIERS, recommend_allocation as _ra
+
+    # Determine which signal to project (best active signal today)
+    _proj_signal = sig  # best ML signal (GO_ULTRA_JACKPOT / GO_JACKPOT / GO_HOT / SKIP)
+    if _proj_signal == "SKIP" and a_status == "ENTRY_OPEN":
+        _proj_signal = "ENTRY_OPEN"
+
+    _proj_tier = TIERS.get(_proj_signal)
+    if _proj_tier:
+        _proj_steps = compound_projection(_proj_signal, equity_input, n_trades=8)
+        _proj_alloc  = _ra(_proj_signal, equity_input)
+
+        if _proj_steps and _proj_alloc:
+            _pa_pct = int(_proj_alloc.alloc_pct * 100)
+            _pa_wp  = int(_proj_tier.win_prob * 100)
+            _pa_wm  = int(_proj_tier.avg_win_mult * 100 - 100)
+
+            # Build the table rows
+            rows_html = ""
+            for step in _proj_steps:
+                if step.trade_num == 0:
+                    rows_html += (
+                        f'<tr>'
+                        f'<td style="color:#8b949e;text-align:center;">Start</td>'
+                        f'<td style="text-align:right;font-weight:700;color:#e6edf3;">'
+                        f'${step.equity_expected:,.0f}</td>'
+                        f'<td style="text-align:right;color:#3fb950;">—</td>'
+                        f'<td style="text-align:right;color:#f85149;">—</td>'
+                        f'</tr>'
+                    )
+                    continue
+
+                # Color the expected column based on vs starting equity
+                gain_vs_start = step.equity_expected - equity_input
+                exp_color = "#3fb950" if step.equity_expected > equity_input else "#f85149"
+
+                # Check milestones
+                prev_exp = _proj_steps[step.trade_num - 1].equity_expected
+                ms_tag = ""
+                for ms in [5_000, 50_000, 500_000]:
+                    if prev_exp < ms <= step.equity_expected:
+                        ms_label = f"${'5k' if ms==5_000 else '50k' if ms==50_000 else '500k'} ✓"
+                        ms_tag = (
+                            f'<span style="background:#ffd633;color:#0d1117;'
+                            f'font-size:8px;font-weight:800;padding:1px 5px;'
+                            f'border-radius:3px;margin-left:4px;">{ms_label}</span>'
+                        )
+                        break
+
+                rows_html += (
+                    f'<tr>'
+                    f'<td style="color:#8b949e;text-align:center;">{step.trade_num}</td>'
+                    f'<td style="text-align:right;font-weight:800;color:{exp_color};">'
+                    f'${step.equity_expected:,.0f}{ms_tag}</td>'
+                    f'<td style="text-align:right;color:#3fb950;">'
+                    f'${step.equity_win_all:,.0f}</td>'
+                    f'<td style="text-align:right;color:#f85149;">'
+                    f'${max(step.equity_lose_all, 0):,.0f}</td>'
+                    f'</tr>'
+                )
+
+            st.markdown(
+                f"""<div style="background:#0d1117;border:1px solid #30363d;
+                                border-radius:14px;padding:22px 26px;margin-bottom:16px;">
+
+                  <!-- Summary row -->
+                  <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:18px;">
+                    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 18px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Signal</div>
+                      <div style="color:#ffd633;font-size:15px;font-weight:800;">
+                        {_proj_signal.replace("_"," ")}</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 18px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Allocation / trade</div>
+                      <div style="color:#fff;font-size:15px;font-weight:800;">
+                        {_pa_pct}% · ${_proj_alloc.alloc_dollars:,.0f}</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 18px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Win Rate (hist)</div>
+                      <div style="color:#3fb950;font-size:15px;font-weight:800;">{_pa_wp}%</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 18px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Avg Win (hist)</div>
+                      <div style="color:#3fb950;font-size:15px;font-weight:800;">+{_pa_wm}%</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 18px;text-align:center;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">EV / trade</div>
+                      <div style="color:#58a6ff;font-size:15px;font-weight:800;">
+                        +${_proj_alloc.expected_gain:,.0f}</div>
+                    </div>
+                  </div>
+
+                  <!-- Growth table -->
+                  <table style="width:100%;border-collapse:collapse;font-size:12px;
+                                font-variant-numeric:tabular-nums;">
+                    <thead>
+                      <tr style="border-bottom:1px solid #30363d;">
+                        <th style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                   letter-spacing:.06em;padding:6px 0;text-align:center;
+                                   font-weight:700;">Trade #</th>
+                        <th style="color:#58a6ff;font-size:10px;text-transform:uppercase;
+                                   letter-spacing:.06em;padding:6px 0;text-align:right;
+                                   font-weight:700;">Expected Equity</th>
+                        <th style="color:#3fb950;font-size:10px;text-transform:uppercase;
+                                   letter-spacing:.06em;padding:6px 0;text-align:right;
+                                   font-weight:700;">All Wins Path</th>
+                        <th style="color:#f85149;font-size:10px;text-transform:uppercase;
+                                   letter-spacing:.06em;padding:6px 0;text-align:right;
+                                   font-weight:700;">All Losses Path</th>
+                      </tr>
+                    </thead>
+                    <tbody style="line-height:2;">
+                      {rows_html}
+                    </tbody>
+                  </table>
+
+                  <div style="margin-top:14px;padding-top:12px;
+                              border-top:1px solid rgba(255,255,255,0.06);
+                              color:#8b949e;font-size:11px;line-height:1.7;">
+                    <strong style="color:#e6edf3;">How to read this:</strong>
+                    Expected equity applies win probability to each trade (the realistic path).
+                    "All Wins" shows max compounding power.
+                    "All Losses" shows Kelly's downside protection — you keep {100 - _pa_pct}% of equity even on every loss.
+                    <strong style="color:#ffd633;">Risk is capped at your allocation — options can only go to $0.</strong>
+                  </div>
                 </div>""",
                 unsafe_allow_html=True,
             )
