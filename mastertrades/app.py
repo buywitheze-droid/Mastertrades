@@ -253,6 +253,20 @@ def load_live_quotes(tickers: tuple) -> dict:
         return {}
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_key_levels(ticker: str, lookback_years: int = 2):
+    """Pre-compute all reversal-level statistics for a ticker."""
+    from src.scanner import fetch_or_load_daily
+    from src.key_levels import drop_band_analysis, vwap_deviation_analysis, pivot_touch_analysis
+    daily = fetch_or_load_daily(ticker, data_dir=DATA_DIR, refresh=True)
+    cutoff = daily.index[-1] - pd.DateOffset(years=lookback_years)
+    daily  = daily[daily.index >= cutoff].dropna()
+    bands      = drop_band_analysis(daily)
+    vwap_stats = vwap_deviation_analysis(daily)
+    pivot_hist = pivot_touch_analysis(daily)
+    return daily, bands, vwap_stats, pivot_hist
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_account():
     from src.account_state import load_state
@@ -262,11 +276,12 @@ def load_account():
 # ─── Sidebar navigation ───────────────────────────────────────────────────────
 
 PAGE_META = {
-    "Command Center":  "Today's trade signals",
-    "Scanner":         "Ranked volatility universe",
-    "Gap Reversal":    "Gap fill & reversal setups",
-    "Account Tracker": "Equity curve & trade log",
-    "Weekday Patterns":"Vol by day of week",
+    "Command Center":   "Today's trade signals",
+    "Scanner":          "Ranked volatility universe",
+    "Gap Reversal":     "Gap fill & reversal setups",
+    "Reversal Levels":  "Intraday low/high reversal zones",
+    "Account Tracker":  "Equity curve & trade log",
+    "Weekday Patterns": "Vol by day of week",
 }
 
 with st.sidebar:
@@ -1451,3 +1466,467 @@ elif page == "Weekday Patterns":
             lambda v: f"{v:.4f}" if pd.notna(v) else "—"
         )
     st.dataframe(display_wd.reset_index(), use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: REVERSAL LEVELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+if page == "Reversal Levels":
+    from src.key_levels import (
+        compute_pivots, pivot_list,
+        drop_band_analysis, matching_drop_band,
+        vwap_deviation_analysis, pivot_touch_analysis,
+        reversal_signal_score,
+    )
+
+    # ── Sidebar controls ─────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("---")
+        rl_ticker = st.selectbox(
+            "Ticker", ["SPY", "QQQ", "IWM", "AAPL", "NVDA", "TSLA", "AMZN"], index=0,
+            key="rl_ticker"
+        )
+        rl_direction = st.radio(
+            "Trade Direction",
+            ["🟢 Low → Calls (bounce up)", "🔴 High → Puts (fade down)"],
+            index=0, key="rl_dir",
+        )
+        is_long = rl_direction.startswith("🟢")
+
+    section("Reversal Level Scanner", f"{rl_ticker} · Intraday extreme → open reversal analysis")
+
+    # ── Live quote ───────────────────────────────────────────────────────────
+    live = load_live_quotes((rl_ticker,))
+    snap = live.get(rl_ticker, {})
+
+    day_open  = snap.get("day_open",  0.0)
+    day_high  = snap.get("day_high",  0.0)
+    day_low   = snap.get("day_low",   0.0)
+    day_close = snap.get("day_close", 0.0)
+    day_vwap  = snap.get("day_vwap",  0.0)
+    price     = day_close or day_open
+
+    has_live  = (day_open > 0 and day_low > 0)
+    drop_pts  = (day_low  - day_open) if has_live else 0.0   # negative = sold off
+    rise_pts  = (day_high - day_open) if has_live else 0.0   # positive = ran up
+    extreme_pts = drop_pts if is_long else rise_pts
+
+    # ── Previous close for pivots ────────────────────────────────────────────
+    prev = {}
+    try:
+        from src.polygon_feed import fetch_prev_close
+        prev = fetch_prev_close(rl_ticker)
+    except Exception:
+        pass
+
+    pivots = None
+    if prev.get("high"):
+        pivots = compute_pivots(prev["high"], prev["low"], prev["close"])
+
+    # ── Historical data ───────────────────────────────────────────────────────
+    try:
+        daily, hist_bands, hist_vwap, hist_pivots = load_key_levels(rl_ticker, lookback_years=2)
+    except Exception as exc:
+        st.error(f"Could not load historical data: {exc}")
+        st.stop()
+
+    # ── TODAY'S CONTEXT ROW ───────────────────────────────────────────────────
+    if has_live:
+        vwap_dev = (day_low - day_vwap) if is_long else (day_high - day_vwap)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        def metric_card(col, label, value, sub="", color="#fff"):
+            col.markdown(
+                f"""<div style="background:#161b22;border:1px solid #30363d;
+                                border-radius:10px;padding:14px 10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:4px;">{label}</div>
+                  <div style="font-size:22px;font-weight:800;color:{color};
+                              letter-spacing:-.02em;">{value}</div>
+                  {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        metric_card(c1, "Open",  f"${day_open:.2f}",  color="#e6edf3")
+        metric_card(c2, "Today's Low",  f"${day_low:.2f}",
+                    sub=f"{drop_pts:+.2f} from open", color="#f85149" if drop_pts < 0 else "#3fb950")
+        metric_card(c3, "Today's High", f"${day_high:.2f}",
+                    sub=f"{rise_pts:+.2f} from open", color="#3fb950" if rise_pts > 0 else "#f85149")
+        metric_card(c4, "VWAP",  f"${day_vwap:.2f}",
+                    sub=f"Low vs VWAP: {day_low-day_vwap:+.2f}", color="#ffd633")
+        metric_card(c5, "Price", f"${price:.2f}",
+                    sub="LIVE", color="#a5d6ff")
+        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+
+    # ── PIVOT LEVELS TABLE ────────────────────────────────────────────────────
+    st.markdown("---")
+    section("Today's Pivot Levels", "Calculated from yesterday's High / Low / Close")
+
+    if pivots:
+        all_levels = pivot_list(pivots)
+        extreme_price = day_low if is_long else day_high
+        near_label, near_price, near_dist = None, 0.0, 9999.0
+        for lbl, lv in all_levels:
+            d = abs(lv - extreme_price) if has_live else abs(lv - price)
+            if d < near_dist:
+                near_dist, near_label, near_price = d, lbl, lv
+
+        rows_html = ""
+        for lbl, lv in all_levels:
+            if price > 0:
+                dist = lv - price
+                dist_str = f"{dist:+.2f}"
+                is_near = lbl == near_label
+                if dist > 0.5:
+                    bar_col = "#238636"; side = "resistance"
+                elif dist < -0.5:
+                    bar_col = "#da3633"; side = "support"
+                else:
+                    bar_col = "#ffd633"; side = "at price"
+            else:
+                dist_str, is_near, bar_col, side = "—", False, "#30363d", ""
+
+            highlight = "border-left:3px solid #ffd633;background:#1c1a0a;" if is_near else ""
+            rows_html += f"""
+            <tr style="{highlight}">
+              <td style="padding:8px 12px;font-weight:{'800' if is_near else '600'};
+                         color:{'#ffd633' if is_near else '#e6edf3'};font-size:12px;">{lbl}</td>
+              <td style="padding:8px 12px;font-weight:800;color:{bar_col};font-size:14px;">
+                ${lv:.2f}</td>
+              <td style="padding:8px 12px;color:#8b949e;font-size:11px;">{dist_str}</td>
+              <td style="padding:8px 12px;color:#8b949e;font-size:10px;text-transform:uppercase;
+                         letter-spacing:.06em;">{side}</td>
+              {"<td style='padding:8px 12px;font-size:10px;color:#ffd633;font-weight:800;'>← NEAREST TO LOW</td>" if is_near and is_long else ""}
+              {"<td style='padding:8px 12px;font-size:10px;color:#ffd633;font-weight:800;'>← NEAREST TO HIGH</td>" if is_near and not is_long else ""}
+              {"<td></td>" if not is_near else ""}
+            </tr>"""
+
+        st.markdown(
+            f"""<div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                          background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+              <thead>
+                <tr style="background:#161b22;">
+                  <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Level</th>
+                  <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Price</th>
+                  <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Dist from Price</th>
+                  <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Role</th>
+                  <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Note</th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table></div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+
+    # ── DROP BAND BOUNCE TABLE ────────────────────────────────────────────────
+    st.markdown("---")
+    section(
+        "Historical Bounce Rates by Drop Magnitude",
+        f"2-year {rl_ticker} daily data · When open→low drops X pts, how often does price bounce back?"
+    )
+
+    today_band = matching_drop_band(hist_bands, drop_pts) if has_live else None
+    rows_html  = ""
+    for b in hist_bands:
+        is_today = (b is today_band)
+        hi_lbl   = f"{b.drop_hi_pts:+.0f}" if b.drop_hi_pts > -900 else "flat"
+        lo_lbl   = f"{b.drop_lo_pts:+.0f}" if b.drop_lo_pts > -900 else "—"
+        r50      = int(b.recovery_50pct_rate * 100)
+        r75      = int(b.recovery_75pct_rate * 100)
+        r100     = int(b.close_above_open_rate * 100)
+        med_b    = b.median_bounce_pts
+        bar_w    = max(4, r50)
+
+        if r50 >= 65:   bar_c = "#3fb950"
+        elif r50 >= 50: bar_c = "#ffd633"
+        else:           bar_c = "#f85149"
+
+        hl = "border-left:3px solid #ffd633;background:#1c1a0a;" if is_today else ""
+        rows_html += f"""
+        <tr style="{hl}">
+          <td style="padding:9px 12px;color:{'#ffd633' if is_today else '#8b949e'};
+                     font-size:11px;font-weight:{'800' if is_today else '400'};">
+            {lo_lbl} to {hi_lbl} pts
+            {"&nbsp;<span style='font-size:9px;background:#1c1a0a;border:1px solid #ffd633;"
+             "color:#ffd633;padding:1px 5px;border-radius:4px;'>TODAY</span>" if is_today else ""}</td>
+          <td style="padding:9px 12px;color:#8b949e;font-size:11px;">{b.n_sessions}</td>
+          <td style="padding:9px 12px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="background:{bar_c};height:8px;width:{bar_w}px;border-radius:4px;
+                          min-width:4px;"></div>
+              <span style="font-size:13px;font-weight:800;color:{bar_c};">{r50}%</span>
+            </div>
+          </td>
+          <td style="padding:9px 12px;font-size:12px;font-weight:800;color:#a5d6ff;">{r75}%</td>
+          <td style="padding:9px 12px;font-size:12px;font-weight:800;color:#3fb950;">{r100}%</td>
+          <td style="padding:9px 12px;font-size:13px;font-weight:800;color:#e6edf3;">
+            +{med_b:.1f} pts</td>
+          <td style="padding:9px 12px;font-size:11px;color:#8b949e;">
+            +{b.avg_open_to_low_pts:.1f} pts to open</td>
+        </tr>"""
+
+    st.markdown(
+        f"""<div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                      background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+          <thead>
+            <tr style="background:#161b22;">
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">Drop from Open</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">Sessions</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">≥50% Recovery</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">≥75% Recovery</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">Back to Open</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">Med Bounce</th>
+              <th style="padding:8px 12px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.08em;">Avg to Open</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table></div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── PIVOT HISTORICAL TOUCH STATS ─────────────────────────────────────────
+    st.markdown("---")
+    section("Pivot Level Historical Touch Analysis",
+            "When the daily Low (or High) has touched each pivot — historical bounce outcomes")
+
+    if hist_pivots:
+        rows_html = ""
+        for pt in hist_pivots:
+            r = int(pt.close_above_open_rate * 100)
+            if r >= 60:  bc = "#3fb950"
+            elif r >= 45: bc = "#ffd633"
+            else:          bc = "#f85149"
+            rows_html += f"""
+            <tr>
+              <td style="padding:9px 14px;font-size:13px;font-weight:800;color:#e6edf3;">{pt.pivot_label}</td>
+              <td style="padding:9px 14px;font-size:12px;color:#8b949e;">{pt.n_touches}</td>
+              <td style="padding:9px 14px;">
+                <span style="font-size:15px;font-weight:800;color:{bc};">{r}%</span></td>
+              <td style="padding:9px 14px;font-size:13px;font-weight:800;color:#3fb950;">
+                +{pt.median_bounce_pts:.2f} pts</td>
+              <td style="padding:9px 14px;font-size:12px;color:#8b949e;">
+                +{pt.avg_return_to_open_pts:.2f} pts to open avg</td>
+            </tr>"""
+        st.markdown(
+            f"""<div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                          background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+              <thead>
+                <tr style="background:#161b22;">
+                  <th style="padding:8px 14px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Pivot</th>
+                  <th style="padding:8px 14px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Touches (2yr)</th>
+                  <th style="padding:8px 14px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Closed Above Open</th>
+                  <th style="padding:8px 14px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Med Bounce</th>
+                  <th style="padding:8px 14px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.08em;">Avg Return to Open</th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table></div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Not enough historical pivot touches to compute stats (need ≥3 touches per level).")
+
+    # ── COMBINED SIGNAL + TRADE CARD ─────────────────────────────────────────
+    st.markdown("---")
+    section("Reversal Signal & Trade Setup",
+            "Weighted combination of drop-band, VWAP deviation, and pivot touch signals")
+
+    if has_live and pivots:
+        vwap_dev_pts = (day_low - day_vwap) if is_long else (day_high - day_vwap)
+
+        # Find matching pivot touch stat
+        target_label = "S3" if is_long else "R1"
+        pivot_stat = next((p for p in hist_pivots if p.pivot_label == target_label), None)
+        if pivot_stat is None and hist_pivots:
+            pivot_stat = next(
+                (p for p in hist_pivots if p.pivot_label in ("S2", "S1")),
+                hist_pivots[0]
+            )
+
+        sig, confidence, desc = reversal_signal_score(
+            today_band, vwap_dev_pts, hist_vwap, pivot_stat
+        )
+
+        if sig == "STRONG REVERSAL":
+            sig_col, sig_bg, sig_border = "#3fb950", "#0d1f14", "#3fb950"
+        elif sig == "PROBABLE REVERSAL":
+            sig_col, sig_bg, sig_border = "#ffd633", "#1a1208", "#ffd633"
+        elif sig == "WATCH":
+            sig_col, sig_bg, sig_border = "#a5d6ff", "#0d1724", "#a5d6ff"
+        else:
+            sig_col, sig_bg, sig_border = "#8b949e", "#161b22", "#30363d"
+
+        conf_pct = int(confidence * 100)
+        trade_type = "BUY CALLS" if is_long else "BUY PUTS"
+        entry    = day_low if is_long else day_high
+        target1  = day_vwap  if is_long else day_vwap
+        target2  = day_open  if is_long else day_open
+        move1    = target1 - entry if is_long else entry - target1
+        move2    = target2 - entry if is_long else entry - target2
+        stop     = entry - 1.0 if is_long else entry + 1.0
+        near_pvt = near_label if pivots and near_label else "—"
+        near_prc = near_price if pivots else 0.0
+
+        st.markdown(
+            f"""<div style="background:{sig_bg};border:2px solid {sig_border};
+                            border-radius:16px;padding:28px;margin-bottom:16px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                          flex-wrap:wrap;gap:16px;">
+                <div>
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.1em;margin-bottom:6px;">Combined Signal</div>
+                  <div style="font-size:28px;font-weight:800;color:{sig_col};
+                              letter-spacing:-.02em;">{sig}</div>
+                  <div style="color:#8b949e;font-size:10px;margin-top:6px;max-width:520px;
+                              line-height:1.7;">{desc}</div>
+                </div>
+                <div style="text-align:right;">
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.1em;margin-bottom:6px;">Confidence</div>
+                  <div style="font-size:36px;font-weight:800;color:{sig_col};">{conf_pct}%</div>
+                  <div style="color:#8b949e;font-size:10px;margin-top:4px;">
+                    Nearest pivot: {near_pvt} @ ${near_prc:.2f}
+                    (Δ{near_prc-entry:+.2f})</div>
+                </div>
+              </div>
+
+              <div style="border-top:1px solid {sig_border}33;margin:20px 0 18px;"></div>
+
+              <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;">
+                <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                            padding:14px;text-align:center;">
+                  <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:6px;">Trade</div>
+                  <div style="font-size:15px;font-weight:800;color:{sig_col};">{trade_type}</div>
+                  <div style="color:#8b949e;font-size:9px;margin-top:4px;">0DTE ATM</div>
+                </div>
+                <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                            padding:14px;text-align:center;">
+                  <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:6px;">Entry Zone</div>
+                  <div style="font-size:17px;font-weight:800;color:#e6edf3;">${entry:.2f}</div>
+                  <div style="color:#8b949e;font-size:9px;margin-top:4px;">
+                    {near_pvt} pivot zone</div>
+                </div>
+                <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                            padding:14px;text-align:center;">
+                  <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:6px;">Target 1 (VWAP)</div>
+                  <div style="font-size:17px;font-weight:800;color:#ffd633;">${target1:.2f}</div>
+                  <div style="color:#8b949e;font-size:9px;margin-top:4px;">
+                    {'+' if move1>=0 else ''}{move1:.2f} pts</div>
+                </div>
+                <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                            padding:14px;text-align:center;">
+                  <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:6px;">Target 2 (Open)</div>
+                  <div style="font-size:17px;font-weight:800;color:#3fb950;">${target2:.2f}</div>
+                  <div style="color:#8b949e;font-size:9px;margin-top:4px;">
+                    {'+' if move2>=0 else ''}{move2:.2f} pts</div>
+                </div>
+                <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                            padding:14px;text-align:center;">
+                  <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:6px;">Stop Loss</div>
+                  <div style="font-size:17px;font-weight:800;color:#f85149;">${stop:.2f}</div>
+                  <div style="color:#8b949e;font-size:9px;margin-top:4px;">$1 beyond entry</div>
+                </div>
+              </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        # ── Historical context banner ─────────────────────────────────────────
+        if today_band:
+            b = today_band
+            st.markdown(
+                f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
+                                padding:18px 24px;display:flex;flex-wrap:wrap;gap:20px;
+                                align-items:center;">
+                  <div>
+                    <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                letter-spacing:.08em;margin-bottom:4px;">Historical Precedents</div>
+                    <div style="font-size:22px;font-weight:800;color:#e6edf3;">
+                      {b.n_sessions} sessions</div>
+                    <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                      with same drop magnitude</div>
+                  </div>
+                  <div style="width:1px;height:40px;background:#30363d;"></div>
+                  <div>
+                    <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                letter-spacing:.08em;margin-bottom:4px;">≥50% Recovery Rate</div>
+                    <div style="font-size:22px;font-weight:800;color:#ffd633;">
+                      {int(b.recovery_50pct_rate*100)}%</div>
+                  </div>
+                  <div style="width:1px;height:40px;background:#30363d;"></div>
+                  <div>
+                    <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                letter-spacing:.08em;margin-bottom:4px;">Median Bounce</div>
+                    <div style="font-size:22px;font-weight:800;color:#3fb950;">
+                      +{b.median_bounce_pts:.2f} pts</div>
+                  </div>
+                  <div style="width:1px;height:40px;background:#30363d;"></div>
+                  <div>
+                    <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                letter-spacing:.08em;margin-bottom:4px;">Avg Return to Open</div>
+                    <div style="font-size:22px;font-weight:800;color:#a5d6ff;">
+                      +{b.avg_open_to_low_pts:.2f} pts</div>
+                  </div>
+                  <div style="width:1px;height:40px;background:#30363d;"></div>
+                  <div>
+                    <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                letter-spacing:.08em;margin-bottom:4px;">Fully to Open</div>
+                    <div style="font-size:22px;font-weight:800;color:#e6edf3;">
+                      {int(b.close_above_open_rate*100)}%</div>
+                  </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("Waiting for today's intraday data from Polygon to compute the reversal signal.")
+
+    # ── Recent S3 touch dates ─────────────────────────────────────────────────
+    st.markdown("---")
+    section("Recent Sessions Near Today's Setup",
+            f"Last 12 sessions where {rl_ticker} low dropped 4–7 pts from open")
+
+    recent_df = daily.copy()
+    recent_df["_drop"] = recent_df["Low"] - recent_df["Open"]
+    similar   = recent_df[(recent_df["_drop"] >= -7.0) & (recent_df["_drop"] <= -4.0)].tail(12)
+    if len(similar) > 0:
+        disp = similar[["Open","High","Low","Close"]].copy()
+        disp["Drop pts"]   = (disp["Low"]   - disp["Open"]).map("{:+.2f}".format)
+        disp["Bounce pts"] = (disp["Close"] - disp["Low"]).map("+{:.2f}".format)
+        disp["Recovered?"] = (similar["Close"] >= similar["Open"]).map(
+            {True: "✅ Yes", False: "❌ No"})
+        disp["% Recovered"] = (
+            (similar["Close"] - similar["Low"]) /
+            (similar["Open"]  - similar["Low"]).replace(0, float("nan"))
+        ).map(lambda v: f"{v*100:.0f}%" if pd.notna(v) else "—")
+        for c in ["Open","High","Low","Close"]:
+            disp[c] = disp[c].map("${:.2f}".format)
+        disp.index = disp.index.strftime("%Y-%m-%d")
+        st.dataframe(disp, use_container_width=True)
+    else:
+        st.info("No historical sessions found matching today's drop magnitude.")
