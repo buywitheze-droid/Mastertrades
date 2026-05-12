@@ -512,10 +512,17 @@ if page == "Command Center":
     trade_tickers = [r.ticker for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
     hot_tickers   = [r.ticker for r in rows if r.signal == "GO_HOT"]
 
-    st.markdown(
+    trade_tickers_html = (
+        f'<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);'
+        f'font-size:12px;color:#8b949e;">Trade: <strong style="color:#3fb950;">'
+        f'{", ".join(trade_tickers)}</strong></div>'
+    ) if trade_tickers else ""
+
+    st.html(
         f"""
         <div style="background:{hero_bg};border:2px solid {hero_border};
-                    border-radius:16px;padding:28px 32px;margin-bottom:24px;">
+                    border-radius:16px;padding:28px 32px;margin-bottom:8px;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
               <div style="color:#8b949e;font-size:11px;letter-spacing:.14em;
@@ -529,21 +536,17 @@ if page == "Command Center":
               </div>
             </div>
             <div style="text-align:right;min-width:140px;">
-              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Lead ticker</div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          margin-bottom:4px;">Lead ticker</div>
               <div style="font-size:32px;font-weight:800;color:#fff;">{best_row.ticker}</div>
               <div style="color:{hero_border};font-size:13px;font-weight:700;">
                 P(vol) {fmt_pct(best_row.p_vol)} · P(pnl) {fmt_pct(best_row.p_pnl)}
               </div>
             </div>
           </div>
-          {
-            f'<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);'
-            f'font-size:12px;color:#8b949e;">Trade: <strong style="color:#3fb950;">'
-            f'{", ".join(trade_tickers)}</strong></div>' if trade_tickers else ""
-          }
+          {trade_tickers_html}
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     # ── Live quotes ───────────────────────────────────────────────────────────
@@ -594,10 +597,11 @@ if page == "Command Center":
         )
 
         with col:
-            st.markdown(
+            st.html(
                 f"""
                 <div style="background:#161b22;border:2px solid {sig_c};
-                            border-radius:14px;padding:20px 16px;{glow}">
+                            border-radius:14px;padding:20px 16px;{glow}
+                            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif;">
                   <div style="display:flex;justify-content:space-between;align-items:center;
                               margin-bottom:4px;">
                     <span style="font-size:24px;font-weight:800;color:#fff;">{row.ticker}</span>
@@ -634,8 +638,7 @@ if page == "Command Center":
                     </div>
                   </div>
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
 
     # ── Live 0DTE Entry Alert ─────────────────────────────────────────────────
