@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Mastertrades"
+version = "1.0.0"
+id = "artifacts/mastertrades-app"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26243
+
+[services.env]
+PORT = "26243"
+
+[services.development]
+run = "cd /home/runner/workspace/mastertrades && streamlit run app.py --server.port 26243 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
+
+[services.production]
+
+[services.production.build]
+args = ["pip", "install", "-r", "mastertrades/requirements.txt"]
+
+[services.production.run]
+args = ["sh", "-c", "cd /home/runner/workspace/mastertrades && streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"]
