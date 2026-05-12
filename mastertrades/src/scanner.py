@@ -91,7 +91,12 @@ def fetch_or_load_daily(
     data_fresh_hours: float = DATA_FRESH_HOURS_DEFAULT,
     history_years: int = HISTORY_YEARS_DEFAULT,
 ) -> pd.DataFrame:
-    """Return daily OHLCV for `ticker`, refreshing cache if missing/stale."""
+    """Return daily OHLCV for `ticker`, refreshing cache if missing/stale.
+
+    Data source priority (when refreshing):
+      1. Polygon.io  — if POLYGON_API_KEY is set (exchange-quality, adjusted)
+      2. Yahoo Finance — fallback when Polygon is unavailable or fails
+    """
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / f"{_safe_ticker_filename(ticker)}_1d.csv"
 
@@ -100,27 +105,46 @@ def fetch_or_load_daily(
         need_refresh = True
 
     if need_refresh:
-        end = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
-        start = (end - pd.DateOffset(years=history_years)).normalize()
-        logger.info("Fetching %s daily %s -> %s", ticker, start.date(), end.date())
-        df = yf.download(
-            tickers=ticker,
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d"),
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-            progress=False,
-            threads=False,
-            group_by="column",
-        )
-        if df is None or df.empty:
-            raise RuntimeError(f"No data returned from Yahoo for {ticker}.")
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.rename_axis("Date").reset_index()
-        df.insert(1, "Ticker", ticker.upper())
-        df.to_csv(path, index=False)
+        # ── Try Polygon first ────────────────────────────────────────────
+        polygon_ok = False
+        try:
+            from src.polygon_feed import fetch_daily_bars, has_polygon_key
+            if has_polygon_key():
+                days = history_years * 365
+                logger.info("Fetching %s via Polygon.io (%d days)", ticker, days)
+                poly_df = fetch_daily_bars(ticker, days=days)
+                if poly_df is not None and not poly_df.empty:
+                    poly_df = poly_df.rename_axis("Date").reset_index()
+                    poly_df.insert(1, "Ticker", ticker.upper())
+                    poly_df.to_csv(path, index=False)
+                    polygon_ok = True
+                    logger.info("Polygon: saved %d rows for %s", len(poly_df), ticker)
+        except Exception as exc:
+            logger.warning("Polygon fetch failed for %s: %s — falling back to Yahoo", ticker, exc)
+
+        # ── Fall back to Yahoo Finance ───────────────────────────────────
+        if not polygon_ok:
+            end = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+            start = (end - pd.DateOffset(years=history_years)).normalize()
+            logger.info("Fetching %s via Yahoo Finance %s -> %s", ticker, start.date(), end.date())
+            df = yf.download(
+                tickers=ticker,
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                interval="1d",
+                auto_adjust=False,
+                actions=False,
+                progress=False,
+                threads=False,
+                group_by="column",
+            )
+            if df is None or df.empty:
+                raise RuntimeError(f"No data returned from Yahoo for {ticker}.")
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.rename_axis("Date").reset_index()
+            df.insert(1, "Ticker", ticker.upper())
+            df.to_csv(path, index=False)
 
     raw = pd.read_csv(path)
     raw["Date"] = pd.to_datetime(raw["Date"], errors="coerce")

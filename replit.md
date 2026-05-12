@@ -51,6 +51,16 @@ A trading analytics and volatility-scanning web app built from the Mastertrades 
 - Inline HTML cards for signal/verdict displays
 - Sidebar navigation with refresh button
 
+## Data Sources
+
+- **Polygon.io** (primary) — exchange-quality adjusted daily OHLCV via `/v2/aggs/ticker/{T}/range/1/day/...`
+  - Requires `POLYGON_API_KEY` secret (set in Replit Secrets)
+  - Used for all historical OHLCV bars fed into ML models and gap analysis
+  - Real-time snapshots/intraday require a higher Polygon plan (403 on free/starter)
+- **Yahoo Finance** (fallback) — used automatically when Polygon key is absent or API fails
+- Source priority handled in `src/scanner.py:fetch_or_load_daily()` — no changes needed elsewhere
+- Polygon module: `mastertrades/src/polygon_feed.py`
+
 ## Gotchas
 
 - First run trains ML models (~60s per ticker) — subsequent runs use cached models

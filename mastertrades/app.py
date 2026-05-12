@@ -203,6 +203,42 @@ with st.sidebar:
     )
     st.caption(PAGE_META[page])
     st.markdown("---")
+
+    # Data source status
+    try:
+        from src.polygon_feed import has_polygon_key, fetch_prev_close
+        _poly_ok = has_polygon_key()
+    except Exception:
+        _poly_ok = False
+
+    if _poly_ok:
+        st.markdown(
+            """<div style="background:#0d1f14;border:1px solid #3fb950;
+                           border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+                 <div style="font-size:10px;font-weight:800;color:#3fb950;
+                             text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
+                   ✅ Polygon.io Connected</div>
+                 <div style="font-size:10px;color:#8b949e;line-height:1.5;">
+                   Exchange-quality OHLCV<br>
+                   Adjusted daily bars<br>
+                   <span style="color:#6e7681;">Real-time quotes: upgrade plan</span>
+                 </div>
+               </div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """<div style="background:#1a1208;border:1px solid #6e7681;
+                           border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+                 <div style="font-size:10px;font-weight:800;color:#6e7681;
+                             text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
+                   ○ Yahoo Finance (fallback)</div>
+                 <div style="font-size:10px;color:#8b949e;">
+                   Add POLYGON_API_KEY to enable<br>exchange-quality data</div>
+               </div>""",
+            unsafe_allow_html=True,
+        )
+
     st.caption(f"Updated: {datetime.now().strftime('%b %d, %H:%M')}")
     if st.button("🔄 Refresh data", use_container_width=True):
         st.cache_data.clear()
@@ -767,17 +803,24 @@ elif page == "Gap Reversal":
     # Backtest equity curve
     if len(gap_all) > 5:
         st.markdown("**Gap Fill+Reversal Strategy Equity Curve**")
+        gap_all = gap_all.copy()
         gap_all["strategy_pnl"] = 0.0
-        gap_all.loc[(gap_all["gap_dir"]=="down") & gap_all["fill_then_reversal"], "strategy_pnl"] = \
-            ftr_days.loc[ftr_days["gap_dir"]=="down", "reversal_pts"].abs() if len(ftr_days) else 0
-        gap_all.loc[(gap_all["gap_dir"]=="up")   & gap_all["fill_then_reversal"], "strategy_pnl"] = \
-            ftr_days.loc[ftr_days["gap_dir"]=="up", "reversal_pts"].abs()   if len(ftr_days) else 0
-        gap_no_ftr = gap_all["gap_dir"].isin(["up","down"]) & ~gap_all["fill_then_reversal"]
-        gap_all.loc[gap_no_ftr, "strategy_pnl"] = -(
-            gap_all.loc[gap_no_ftr, "abs_gap_pct"] * gap_all.loc[gap_no_ftr, "Open"] * 0.5
+        # Winners: use this row's own reversal_pts (correct index alignment)
+        mask_down_win = (gap_all["gap_dir"] == "down") & gap_all["fill_then_reversal"]
+        mask_up_win   = (gap_all["gap_dir"] == "up")   & gap_all["fill_then_reversal"]
+        gap_all.loc[mask_down_win, "strategy_pnl"] = gap_all.loc[mask_down_win, "reversal_pts"].abs()
+        gap_all.loc[mask_up_win,   "strategy_pnl"] = gap_all.loc[mask_up_win,   "reversal_pts"].abs()
+        # Losers: small fixed loss proportional to gap size
+        mask_loss = ~gap_all["fill_then_reversal"]
+        gap_all.loc[mask_loss, "strategy_pnl"] = -(
+            gap_all.loc[mask_loss, "abs_gap_pct"].fillna(0) *
+            gap_all.loc[mask_loss, "Open"].fillna(0) * 0.5
         )
+        gap_all["strategy_pnl"] = gap_all["strategy_pnl"].fillna(0)
         cum_pnl = gap_all["strategy_pnl"].cumsum().rename("Cumulative P&L (pts)")
-        st.line_chart(cum_pnl, use_container_width=True, height=180)
+        # Only chart if we have valid finite data
+        if cum_pnl.notna().any() and cum_pnl.replace([float("inf"), float("-inf")], float("nan")).notna().any():
+            st.line_chart(cum_pnl, use_container_width=True, height=180)
 
         win_rate  = gap_all["fill_then_reversal"].mean()
         avg_win   = gap_all.loc[gap_all["fill_then_reversal"], "strategy_pnl"].mean()
