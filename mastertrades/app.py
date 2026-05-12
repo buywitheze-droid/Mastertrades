@@ -184,7 +184,7 @@ def section(title: str, subtitle: str = ""):
 
 # ─── Cached data loaders ─────────────────────────────────────────────────────
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_jackpot_scan(tickers=("SPY", "QQQ", "IWM", "AAPL")):
     from src.jackpot_scanner import scan_jackpot_universe
     rows, errors = scan_jackpot_universe(
@@ -568,14 +568,168 @@ if page == "Command Center":
                 unsafe_allow_html=True,
             )
     else:
-        # No trade signals — show skip message
-        skip_tickers = [r.ticker for r in rows if r.signal == "SKIP"]
-        if skip_tickers:
+        # ── SKIP state — rich context card ─────────────────────────────────
+        from src.jackpot_scanner import HOT_THRESHOLD, JACKPOT_THRESHOLD
+        st.markdown("---")
+        section("Model Intelligence", "Why SKIP — and what to watch for")
+
+        # Per-ticker p_vol gauge bars
+        gauge_html = ""
+        for r in rows:
+            pv   = r.p_vol
+            pp   = r.p_pnl
+            pv_w = min(int(pv / HOT_THRESHOLD * 100), 100)
+            pp_w = min(int(pp / JACKPOT_THRESHOLD * 100), 100)
+            pv_c = "#3fb950" if pv >= HOT_THRESHOLD else "#ffd633" if pv >= HOT_THRESHOLD * 0.7 else "#8b949e"
+            pp_c = "#3fb950" if pp >= JACKPOT_THRESHOLD else "#ffd633" if pp >= JACKPOT_THRESHOLD * 0.7 else "#8b949e"
+            pv_pct_of_thresh = int(pv / HOT_THRESHOLD * 100)
+            pp_pct_of_thresh = int(pp / JACKPOT_THRESHOLD * 100)
+            snap_r = live_q.get(r.ticker, {})
+            price_r = snap_r.get("last_price") or r.last_close
+            chg_r   = snap_r.get("change_pct") or 0.0
+            chg_c_r = "#3fb950" if chg_r >= 0 else "#f85149"
+            gauge_html += f"""
+            <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;
+                        padding:16px 18px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;
+                          margin-bottom:12px;">
+                <span style="font-size:16px;font-weight:800;color:#e6edf3;">{r.ticker}</span>
+                <span style="font-size:14px;font-weight:700;color:{chg_c_r};">
+                  ${price_r:,.2f}
+                  <span style="font-size:11px;">{chg_r*100:+.2f}%</span></span>
+              </div>
+              <div style="margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                  <span style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                               letter-spacing:.06em;">P(vol) — need ≥{HOT_THRESHOLD*100:.0f}%</span>
+                  <span style="font-size:11px;font-weight:800;color:{pv_c};">
+                    {pv*100:.1f}% ({pv_pct_of_thresh}% of threshold)</span>
+                </div>
+                <div style="height:6px;background:rgba(139,148,158,0.15);border-radius:3px;
+                            overflow:hidden;">
+                  <div style="width:{pv_w}%;height:100%;background:{pv_c};border-radius:3px;">
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                  <span style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                               letter-spacing:.06em;">P(pnl) — need ≥{JACKPOT_THRESHOLD*100:.0f}%</span>
+                  <span style="font-size:11px;font-weight:800;color:{pp_c};">
+                    {pp*100:.1f}% ({pp_pct_of_thresh}% of threshold)</span>
+                </div>
+                <div style="height:6px;background:rgba(139,148,158,0.15);border-radius:3px;
+                            overflow:hidden;">
+                  <div style="width:{pp_w}%;height:100%;background:{pp_c};border-radius:3px;">
+                  </div>
+                </div>
+              </div>
+            </div>"""
+
+        st.markdown(
+            f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">'
+            f'{gauge_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── What would trigger ─────────────────────────────────────────────
+        closest = max(rows, key=lambda r: r.p_vol / HOT_THRESHOLD)
+        gap_to_hot  = max(HOT_THRESHOLD - closest.p_vol, 0.0)
+        gap_to_jack = max(JACKPOT_THRESHOLD - closest.p_pnl, 0.0)
+        st.markdown(
+            f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
+                            padding:18px 24px;margin-top:12px;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;margin-bottom:10px;">What would flip to GO_HOT</div>
+              <div style="display:flex;gap:24px;flex-wrap:wrap;">
+                <div>
+                  <div style="color:#8b949e;font-size:11px;">Closest ticker</div>
+                  <div style="font-size:20px;font-weight:800;color:#fff;">{closest.ticker}</div>
+                </div>
+                <div>
+                  <div style="color:#8b949e;font-size:11px;">P(vol) gap to trigger</div>
+                  <div style="font-size:20px;font-weight:800;color:#ffd633;">
+                    +{gap_to_hot*100:.1f}% needed</div>
+                </div>
+                <div>
+                  <div style="color:#8b949e;font-size:11px;">P(pnl) gap to trigger</div>
+                  <div style="font-size:20px;font-weight:800;color:#a5d6ff;">
+                    +{gap_to_jack*100:.1f}% needed</div>
+                </div>
+                <div>
+                  <div style="color:#8b949e;font-size:11px;">Thresholds</div>
+                  <div style="font-size:13px;font-weight:700;color:#8b949e;">
+                    P(vol) ≥ {HOT_THRESHOLD*100:.0f}% <span style="color:#30363d;">·</span>
+                    P(pnl) ≥ {JACKPOT_THRESHOLD*100:.0f}%</div>
+                </div>
+              </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        # ── Today's intraday opportunity ───────────────────────────────────
+        live_spy = live_q.get("SPY", {})
+        spy_open = live_spy.get("day_open", 0.0)
+        spy_low  = live_spy.get("day_low",  0.0)
+        spy_high = live_spy.get("day_high", 0.0)
+        spy_drop = spy_open - spy_low if spy_open > 0 else 0.0
+
+        if spy_drop >= 2.0:
+            opp_color = "#ffd633" if spy_drop >= 4.0 else "#d29922"
+            opp_bg    = "#1c1a0a" if spy_drop >= 4.0 else "#1a1208"
             st.markdown(
-                f"""<div style="background:#161b22;border:1px solid #8b949e;border-radius:10px;
-                               padding:16px 20px;margin-top:12px;color:#8b949e;font-size:13px;">
-                  ⏭ No trade setups today — {", ".join(skip_tickers)} all showing SKIP.
-                  Check back at open or after any pre-market catalyst.
+                f"""<div style="background:{opp_bg};border:2px solid {opp_color};
+                                border-radius:12px;padding:18px 24px;margin-top:12px;">
+                  <div style="font-size:13px;font-weight:800;color:{opp_color};
+                              text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;">
+                    🎰 Intraday Opportunity Active — ML is SKIP but market is moving</div>
+                  <div style="color:#c9d1d9;font-size:13px;line-height:1.7;">
+                    SPY has dropped <strong style="color:#fff;">{spy_drop:.1f} pts</strong>
+                    from open (${spy_open:.2f}) to low (${spy_low:.2f}).
+                    {"<strong style='color:#ffd633;'>This is a potential 1000%+ 0DTE reversal setup.</strong>" if spy_drop >= 4.0 else ""}
+                    Calls near the open strike are cheap — check the 0DTE Lottery and Reversal Levels pages
+                    for entry levels, sweet-spot strikes, and historical bounce rates.
+                  </div>
+                  <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;">
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 16px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;">Drop from open</div>
+                      <div style="font-size:18px;font-weight:800;color:#f85149;">
+                        -{spy_drop:.1f} pts</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 16px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;">SPY Low</div>
+                      <div style="font-size:18px;font-weight:800;color:#e6edf3;">
+                        ${spy_low:.2f}</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 16px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;">Recovery target</div>
+                      <div style="font-size:18px;font-weight:800;color:#3fb950;">
+                        ${spy_open:.2f} (+{spy_drop:.1f} pts)</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                                padding:10px 16px;text-align:center;">
+                      <div style="color:#8b949e;font-size:10px;">Check pages</div>
+                      <div style="font-size:13px;font-weight:800;color:#ffd633;">
+                        0DTE Lottery · Reversal Levels</div>
+                    </div>
+                  </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+                                padding:14px 20px;margin-top:12px;color:#8b949e;font-size:12px;
+                                line-height:1.7;">
+                  <strong style="color:#e6edf3;">No intraday setup active.</strong>
+                  SPY drop from open: {spy_drop:.1f} pts (need ≥2 pts for a reversal setup).
+                  Use the <strong style="color:#ffd633;">0DTE Lottery</strong> and
+                  <strong style="color:#ffd633;">Reversal Levels</strong> pages to monitor
+                  live intraday action. Signals refresh every 5 minutes — use the
+                  🔄 button in the sidebar to force a refresh.
                 </div>""",
                 unsafe_allow_html=True,
             )
@@ -728,26 +882,81 @@ elif page == "Scanner":
     st.markdown("---")
     section("Full Ranked List", "All tickers sorted by P(volatile day) — higher = more expected movement")
 
-    table_rows = []
+    tbl_rows_html = ""
     for rank, (_, row) in enumerate(df_s.iterrows(), 1):
         p_vol  = row.get("p_vol",  float("nan"))
         lift   = row.get("lift",   float("nan"))
         close  = row.get("last_close", float("nan"))
         chg    = row.get("pct_change", float("nan"))
         rsi    = row.get("rsi14",  float("nan"))
-        lift_txt, _ = lift_label(lift)
-        table_rows.append({
-            "#":         rank,
-            "Ticker":    row.get("ticker", "?"),
-            "P(vol)":    fmt_pct(p_vol),
-            "Lift":      f"{lift:.2f}x" if not math.isnan(lift) else "—",
-            "Verdict":   lift_txt,
-            "Close":     fmt_dollar(close),
-            "Chg %":     f"{chg*100:+.2f}%" if not math.isnan(chg) else "—",
-            "RSI(14)":   f"{rsi:.0f}" if not math.isnan(rsi) else "—",
-        })
+        tkr    = row.get("ticker", "?")
+        lift_txt, lift_c = lift_label(lift)
+        pvol_c = ("#ffd633" if (not math.isnan(p_vol) and p_vol >= 0.65)
+                  else "#3fb950" if (not math.isnan(p_vol) and p_vol >= 0.30)
+                  else "#8b949e")
+        chg_c  = "#3fb950" if (not math.isnan(chg) and chg >= 0) else "#f85149"
+        bar_w  = max(3, min(int(p_vol * 200), 100)) if not math.isnan(p_vol) else 3
+        snap_r = scanner_live.get(tkr, {})
+        live_px = snap_r.get("last_price") or close
+        live_chg = snap_r.get("change_pct")
+        if live_chg is not None and not math.isnan(float(live_chg)):
+            chg_str = f"{float(live_chg)*100:+.2f}%"
+            chg_c   = "#3fb950" if float(live_chg) >= 0 else "#f85149"
+        else:
+            chg_str = f"{chg*100:+.2f}%" if not math.isnan(chg) else "—"
+        tbl_rows_html += f"""
+        <tr>
+          <td style="padding:9px 14px;color:#8b949e;font-size:11px;">{rank}</td>
+          <td style="padding:9px 14px;font-size:14px;font-weight:800;color:#e6edf3;">{tkr}</td>
+          <td style="padding:9px 14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="background:{pvol_c};height:6px;width:{bar_w}px;
+                          border-radius:3px;min-width:3px;"></div>
+              <span style="font-size:13px;font-weight:800;color:{pvol_c};">
+                {fmt_pct(p_vol)}</span>
+            </div>
+          </td>
+          <td style="padding:9px 14px;font-size:12px;color:#e6edf3;">
+            {f"{lift:.2f}x" if not math.isnan(lift) else "—"}</td>
+          <td style="padding:9px 14px;">
+            <span style="background:{lift_c}22;color:{lift_c};font-size:10px;font-weight:800;
+                         padding:2px 7px;border-radius:4px;">{lift_txt}</span></td>
+          <td style="padding:9px 14px;font-size:13px;font-weight:700;color:#e6edf3;">
+            {fmt_dollar(live_px)}</td>
+          <td style="padding:9px 14px;font-size:12px;font-weight:700;color:{chg_c};">
+            {chg_str}</td>
+          <td style="padding:9px 14px;font-size:12px;color:#8b949e;">
+            {f"{rsi:.0f}" if not math.isnan(rsi) else "—"}</td>
+        </tr>"""
 
-    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    st.markdown(
+        f"""<div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                      background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+          <thead>
+            <tr style="background:#161b22;border-bottom:1px solid #30363d;">
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">#</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Ticker</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">P(vol)</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Lift</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Verdict</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Price</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Chg %</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">RSI(14)</th>
+            </tr>
+          </thead>
+          <tbody>{tbl_rows_html}</tbody>
+        </table></div>""",
+        unsafe_allow_html=True,
+    )
     st.caption("Lift = P(vol) ÷ base-rate   ·   Extreme >3.0  ·  High >2.0  ·  Elevated >1.3")
 
 
