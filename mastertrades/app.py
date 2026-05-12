@@ -253,6 +253,100 @@ def load_live_quotes(tickers: tuple) -> dict:
         return {}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def load_0dte_alert(ticker: str = "SPY") -> dict:
+    """Live 0DTE entry alert — auto-refreshes every 30 s.
+
+    Returns a dict:
+        status:   "ENTRY_OPEN" | "APPROACHING" | "QUIET" | "UNAVAILABLE"
+        ticker:   str
+        drop_pts: float   (open - low, positive = sold off)
+        rise_pts: float   (high - open, positive = ran up)
+        day_open: float
+        day_low:  float
+        day_high: float
+        day_vwap: float
+        recs:     list[StrikeRecommendation]  — sorted by est_gain_pct desc
+        hist_pct_1000plus: int  — from drop-band table
+    """
+    try:
+        from src.polygon_feed import has_polygon_key
+        from src.options_scanner import (
+            fetch_0dte_chain, recommend_strikes, drop_band_multiplier_table
+        )
+        from datetime import datetime
+
+        if not has_polygon_key():
+            return {"status": "UNAVAILABLE", "ticker": ticker, "drop_pts": 0.0,
+                    "rise_pts": 0.0, "day_open": 0.0, "day_low": 0.0,
+                    "day_high": 0.0, "day_vwap": 0.0, "recs": [], "hist_pct_1000plus": 0}
+
+        snaps  = fetch_0dte_alert._live_cache if False else {}  # just call live quotes
+        snaps  = __import__("src.polygon_feed", fromlist=["fetch_multi_snapshot"]).fetch_multi_snapshot([ticker])
+        snap   = snaps.get(ticker, {})
+
+        day_open = float(snap.get("day_open",  0.0) or 0.0)
+        day_low  = float(snap.get("day_low",   0.0) or 0.0)
+        day_high = float(snap.get("day_high",  0.0) or 0.0)
+        day_vwap = float(snap.get("day_vwap",  0.0) or 0.0)
+
+        if day_open <= 0 or day_low <= 0:
+            return {"status": "UNAVAILABLE", "ticker": ticker, "drop_pts": 0.0,
+                    "rise_pts": 0.0, "day_open": day_open, "day_low": day_low,
+                    "day_high": day_high, "day_vwap": day_vwap, "recs": [], "hist_pct_1000plus": 0}
+
+        drop_pts = day_open - day_low    # positive = sold off from open
+        rise_pts = day_high - day_open   # positive = ran up from open
+
+        # Historical probability from drop-band table
+        table = drop_band_multiplier_table()
+        hist_pct = 0
+        for row in table:
+            band = row["band"]
+            if "0–1" in band   and drop_pts < 1:   hist_pct = row["pct_1000plus"]; break
+            if "1–2" in band   and drop_pts < 2:   hist_pct = row["pct_1000plus"]; break
+            if "2–3" in band   and drop_pts < 3:   hist_pct = row["pct_1000plus"]; break
+            if "3–5" in band   and drop_pts < 5:   hist_pct = row["pct_1000plus"]; break
+            if "5–7" in band   and drop_pts < 7:   hist_pct = row["pct_1000plus"]; break
+            if "7–10" in band  and drop_pts < 10:  hist_pct = row["pct_1000plus"]; break
+            if "10+" in band:                       hist_pct = row["pct_1000plus"]; break
+
+        # Determine status
+        if drop_pts >= 3.0:
+            status = "ENTRY_OPEN"
+        elif drop_pts >= 1.5:
+            status = "APPROACHING"
+        else:
+            status = "QUIET"
+
+        # Only fetch options chain when a real setup is in play
+        recs = []
+        if drop_pts >= 2.0:
+            try:
+                exp_date = datetime.now().strftime("%Y-%m-%d")
+                contracts = fetch_0dte_chain(ticker, exp_date=exp_date, contract_type="call")
+                recs = recommend_strikes(day_open, day_low, contracts)
+            except Exception:
+                recs = []
+
+        return {
+            "status":              status,
+            "ticker":              ticker,
+            "drop_pts":            round(drop_pts, 2),
+            "rise_pts":            round(rise_pts, 2),
+            "day_open":            day_open,
+            "day_low":             day_low,
+            "day_high":            day_high,
+            "day_vwap":            day_vwap,
+            "recs":                recs,
+            "hist_pct_1000plus":   hist_pct,
+        }
+    except Exception:
+        return {"status": "UNAVAILABLE", "ticker": ticker, "drop_pts": 0.0,
+                "rise_pts": 0.0, "day_open": 0.0, "day_low": 0.0,
+                "day_high": 0.0, "day_vwap": 0.0, "recs": [], "hist_pct_1000plus": 0}
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_key_levels(ticker: str, lookback_years: int = 2):
     """Pre-compute all reversal-level statistics for a ticker."""
@@ -509,6 +603,152 @@ if page == "Command Center":
                 """,
                 unsafe_allow_html=True,
             )
+
+    # ── Live 0DTE Entry Alert ─────────────────────────────────────────────────
+    st.markdown("---")
+    alert = load_0dte_alert("SPY")
+    a_status   = alert["status"]
+    a_drop     = alert["drop_pts"]
+    a_open     = alert["day_open"]
+    a_low      = alert["day_low"]
+    a_high     = alert["day_high"]
+    a_vwap     = alert["day_vwap"]
+    a_recs     = alert["recs"]
+    a_hist_pct = alert["hist_pct_1000plus"]
+
+    if a_status == "ENTRY_OPEN":
+        alert_border = "#ffd633"
+        alert_bg     = "linear-gradient(135deg,#1a1208,#131008)"
+        alert_title  = "🎯 0DTE ENTRY WINDOW OPEN — SPY REVERSAL SETUP ACTIVE"
+        alert_sub    = (f"SPY dropped {a_drop:.1f} pts from open · "
+                        f"Historical 1000%+ probability: {a_hist_pct}% of sessions")
+    elif a_status == "APPROACHING":
+        alert_border = "#d29922"
+        alert_bg     = "linear-gradient(135deg,#1a1508,#161008)"
+        alert_title  = "👀 APPROACHING SETUP — SPY DROP BUILDING"
+        alert_sub    = (f"SPY down {a_drop:.1f} pts from open · "
+                        f"Setup activates at 3 pts · Need {max(0, 3-a_drop):.1f} more pts of drop")
+    elif a_status == "QUIET":
+        alert_border = "#30363d"
+        alert_bg     = "#0d1117"
+        alert_title  = "⏸ QUIET — No 0DTE Setup Yet"
+        alert_sub    = (f"SPY within {a_drop:.1f} pts of open · "
+                        f"Setup fires when drop ≥ 3 pts from open (${a_open:.2f})")
+    else:
+        alert_border = "#30363d"
+        alert_bg     = "#0d1117"
+        alert_title  = "⏸ 0DTE ALERT — Awaiting Live Data"
+        alert_sub    = "Live Polygon data required — check Polygon API key"
+
+    # Build strike recommendation section
+    if a_recs and a_status == "ENTRY_OPEN":
+        top3     = a_recs[:3]
+        best_rec = top3[0]
+        recs_html = ""
+        for idx, rec in enumerate(top3):
+            is_best = idx == 0
+            rec_bg  = "#0d1f14" if is_best else "#161b22"
+            rec_bdr = "#3fb950" if is_best else "#30363d"
+            best_tag = (
+                '<div style="font-size:9px;background:#0d1f14;border:1px solid #3fb950;'
+                'color:#3fb950;padding:2px 7px;border-radius:4px;display:inline-block;'
+                'margin-bottom:6px;">★ BEST R/R</div><br>' if is_best else ""
+            )
+            gain_c = "#ffd633" if rec.est_gain_pct >= 1000 else "#3fb950" if rec.est_gain_pct >= 500 else "#58a6ff"
+            recs_html += f"""
+            <div style="background:{rec_bg};border:2px solid {rec_bdr};border-radius:12px;
+                        padding:16px;flex:1;min-width:160px;text-align:center;">
+              {best_tag}
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.07em;margin-bottom:4px;">
+                CALL ${rec.strike:.0f}</div>
+              <div style="color:#8b949e;font-size:10px;margin-bottom:8px;">
+                +{rec.dist_from_low:.0f} pts above low</div>
+              <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">
+                Entry: <strong style="color:#e6edf3;font-size:14px;">${rec.est_entry_price:.2f}</strong></div>
+              <div style="font-size:11px;color:#8b949e;margin-bottom:8px;">
+                Target: <strong style="color:#3fb950;font-size:14px;">${rec.est_target_price:.2f}</strong></div>
+              <div style="font-size:22px;font-weight:800;color:{gain_c};">
+                +{rec.est_gain_pct:,.0f}%</div>
+              <div style="font-size:10px;color:#8b949e;margin-top:4px;">{rec.risk_category.split("—")[0].strip()}</div>
+            </div>"""
+
+        reentry_note = (
+            f"Buy at intraday low (~${a_low:.2f}) · "
+            f"Target open price ${a_open:.2f} (+{a_drop:.1f} pts recovery) · "
+            f"Best strike: ${best_rec.strike:.0f} call (est. ${best_rec.est_entry_price:.2f} entry → "
+            f"${best_rec.est_target_price:.2f} target)"
+        )
+        strike_section_html = f"""
+        <div style="margin-top:16px;padding-top:14px;
+                    border-top:1px solid rgba(255,255,255,0.08);">
+          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                      letter-spacing:.08em;margin-bottom:10px;">Strike Recommendations — Buy at Low</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">{recs_html}</div>
+          <div style="margin-top:10px;color:#8b949e;font-size:11px;
+                      line-height:1.6;">{reentry_note}</div>
+        </div>"""
+    elif a_status == "APPROACHING":
+        pts_needed  = max(0, 3.0 - a_drop)
+        strike_level = round(a_low - pts_needed)  # approx strike if drop continues
+        strike_section_html = f"""
+        <div style="margin-top:14px;padding-top:12px;
+                    border-top:1px solid rgba(255,255,255,0.07);
+                    font-size:12px;color:#8b949e;line-height:1.7;">
+          <strong style="color:#d29922;">Watching:</strong>
+          If SPY drops {pts_needed:.1f} more pts to ~${a_low - pts_needed:.2f},
+          setup activates. Sweet-spot calls would be around the
+          <strong style="color:#e6edf3;">${round(a_open):.0f}–${round(a_open + 3):.0f} strikes</strong>
+          (which will be +1 to +8 pts above the new low).
+          Historical 1000%+ rate at a 3 pt drop: <strong style="color:#ffd633;">35%</strong>.
+        </div>"""
+    else:
+        pts_to_setup = max(0, 3.0 - a_drop)
+        strike_section_html = f"""
+        <div style="margin-top:12px;padding-top:10px;
+                    border-top:1px solid rgba(255,255,255,0.06);
+                    font-size:11px;color:#8b949e;line-height:1.7;">
+          Setup activates when SPY drops ≥3 pts from open
+          (${a_open:.2f} − 3 = ${a_open - 3:.2f} trigger).
+          Currently {a_drop:.1f} pts below open — need {pts_to_setup:.1f} more pts.
+          Refreshes every 30 s automatically.
+        </div>"""
+
+    st.markdown(
+        f"""<div style="background:{alert_bg};border:2px solid {alert_border};
+                        border-radius:16px;padding:22px 26px;margin-bottom:4px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                      flex-wrap:wrap;gap:12px;">
+            <div>
+              <div style="font-size:14px;font-weight:800;color:{alert_border};
+                          text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
+                {alert_title}</div>
+              <div style="font-size:12px;color:#8b949e;">{alert_sub}</div>
+            </div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;">
+              <div style="text-align:center;">
+                <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Open</div>
+                <div style="font-size:16px;font-weight:800;color:#e6edf3;">${a_open:.2f}</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Low</div>
+                <div style="font-size:16px;font-weight:800;color:#f85149;">${a_low:.2f}</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Drop</div>
+                <div style="font-size:16px;font-weight:800;color:{alert_border};">
+                  -{a_drop:.1f} pts</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">VWAP</div>
+                <div style="font-size:16px;font-weight:800;color:#58a6ff;">${a_vwap:.2f}</div>
+              </div>
+            </div>
+          </div>
+          {strike_section_html}
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     # ── Trade tickets ─────────────────────────────────────────────────────────
     trade_rows = [r for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
