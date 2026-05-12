@@ -42,7 +42,7 @@ DATA_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 
 # ─── Global CSS ───────────────────────────────────────────────────────────────
-st.markdown("""
+st.html("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -126,7 +126,7 @@ st.markdown("""
   /* ── Section divider ── */
   hr { border-color: rgba(255,255,255,0.06) !important; margin: 1.4rem 0 !important; }
 </style>
-""", unsafe_allow_html=True)
+""")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
