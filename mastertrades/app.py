@@ -280,6 +280,7 @@ PAGE_META = {
     "Scanner":          "Ranked volatility universe",
     "Gap Reversal":     "Gap fill & reversal setups",
     "Reversal Levels":  "Intraday low/high reversal zones",
+    "0DTE Lottery":     "1000%+ options plays & sweet spots",
     "Account Tracker":  "Equity curve & trade log",
     "Weekday Patterns": "Vol by day of week",
 }
@@ -824,7 +825,11 @@ elif page == "Gap Reversal":
             for e in load_errors:
                 st.text(e)
 
-    gap_today = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir in ("up", "down")]
+    MIN_GAP_PCT = 0.01   # require ≥1% gap to show a setup
+    gap_today = [
+        (tkr, tod, sb) for tkr, tod, sb in today_rows
+        if tod.gap_dir in ("up", "down") and abs(tod.gap_pct) >= MIN_GAP_PCT
+    ]
     no_gap    = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir not in ("up", "down")]
 
     # Live quotes for fill progress bars (TTL=30 s)
@@ -1930,3 +1935,412 @@ if page == "Reversal Levels":
         st.dataframe(disp, use_container_width=True)
     else:
         st.info("No historical sessions found matching today's drop magnitude.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: 0DTE LOTTERY
+# ══════════════════════════════════════════════════════════════════════════════
+
+if page == "0DTE Lottery":
+    from src.options_scanner import (
+        fetch_0dte_chain, analyze_chain, recommend_strikes,
+        drop_band_multiplier_table,
+    )
+
+    # ── Sidebar controls ─────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("---")
+        lot_ticker = st.selectbox(
+            "Ticker", ["SPY", "QQQ", "IWM"], index=0, key="lot_ticker"
+        )
+        lot_ctype = st.radio(
+            "Direction", ["Calls (bounce from low)", "Puts (fade from high)"],
+            index=0, key="lot_ctype",
+        )
+        is_calls = lot_ctype.startswith("Calls")
+
+    # ── Live data ─────────────────────────────────────────────────────────────
+    live = load_live_quotes((lot_ticker,))
+    snap = live.get(lot_ticker, {})
+
+    day_open  = snap.get("day_open",  0.0)
+    day_high  = snap.get("day_high",  0.0)
+    day_low   = snap.get("day_low",   0.0)
+    day_close = snap.get("day_close", 0.0)
+    day_vwap  = snap.get("day_vwap",  0.0)
+    price     = day_close or day_open
+    has_live  = day_open > 0 and day_low > 0
+
+    drop_pts = (day_open - day_low)   if has_live else 0.0   # positive = sold off
+    rise_pts = (day_high - day_open)  if has_live else 0.0   # positive = ran up
+
+    section("0DTE Lottery Scanner",
+            f"{lot_ticker} · Live 1000%+ options plays — today's intraday reversal setups")
+
+    # ── Context strip ─────────────────────────────────────────────────────────
+    if has_live:
+        c1, c2, c3, c4 = st.columns(4)
+        def lcard(col, lbl, val, sub="", color="#e6edf3"):
+            col.markdown(
+                f"""<div style="background:#161b22;border:1px solid #30363d;
+                                border-radius:10px;padding:14px 10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:4px;">{lbl}</div>
+                  <div style="font-size:22px;font-weight:800;color:{color};">{val}</div>
+                  {"<div style='color:#8b949e;font-size:10px;margin-top:4px;'>"+sub+"</div>" if sub else ""}
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        lcard(c1, "Open",  f"${day_open:.2f}",  color="#e6edf3")
+        lcard(c2, "Intraday Low", f"${day_low:.2f}",
+              sub=f"Drop: {drop_pts:+.2f} pts from open",
+              color="#f85149" if drop_pts > 0 else "#8b949e")
+        lcard(c3, "Intraday High", f"${day_high:.2f}",
+              sub=f"Rise: +{rise_pts:.2f} pts from open",
+              color="#3fb950")
+        lcard(c4, "VWAP", f"${day_vwap:.2f}",
+              sub=f"Price vs VWAP: {price-day_vwap:+.2f}",
+              color="#ffd633")
+        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+
+    # ── Fetch live options chain ──────────────────────────────────────────────
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with st.spinner(f"Loading {lot_ticker} 0DTE options chain…"):
+            @st.cache_data(ttl=30, show_spinner=False)
+            def _fetch_chain(ticker, exp):
+                return fetch_0dte_chain(ticker, exp_date=exp)
+            contracts = _fetch_chain(lot_ticker, today_str)
+
+        ctype_filter = "call" if is_calls else "put"
+        analyses = analyze_chain(
+            [c for c in contracts if c.contract_type == ctype_filter],
+            underlying_open  = day_open  or price,
+            underlying_low   = day_low   or price,
+            underlying_high  = day_high  or price,
+            underlying_close = day_close or price,
+            strike_window    = 20.0,
+        )
+    except Exception as exc:
+        st.error(f"Options chain error: {exc}")
+        st.stop()
+
+    over_1000  = [a for a in analyses if a.is_1000_plus]
+    over_500   = [a for a in analyses if a.day_gain_pct >= 500 and not a.is_1000_plus]
+    sweet_spot = [a for a in analyses if a.is_sweet_spot]
+
+    # ── Hero banner ───────────────────────────────────────────────────────────
+    hero_count = len(over_1000)
+    hero_color = "#ffd633" if hero_count > 0 else "#8b949e"
+    hero_bg    = "linear-gradient(135deg,#1a1208,#131008)" if hero_count > 0 else "#161b22"
+    hero_border = "#ffd633" if hero_count > 0 else "#30363d"
+    hero_title = (
+        f"🌟 {hero_count} CONTRACT{'S' if hero_count!=1 else ''} HIT 1000%+ TODAY"
+        if hero_count > 0
+        else "No 1000%+ Contracts Yet Today"
+    )
+
+    st.markdown(
+        f"""<div style="background:{hero_bg};border:2px solid {hero_border};
+                        border-radius:14px;padding:22px 28px;margin-bottom:20px;">
+          <div style="font-size:24px;font-weight:800;color:{hero_color};
+                      margin-bottom:10px;">{hero_title}</div>
+          <div style="display:flex;gap:28px;flex-wrap:wrap;">
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;">500%+ movers</div>
+              <div style="font-size:28px;font-weight:800;color:#f85149;">
+                {len(over_500)+hero_count}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;">Sweet-spot contracts</div>
+              <div style="font-size:28px;font-weight:800;color:#3fb950;">
+                {len(sweet_spot)}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;">Total 0DTE contracts</div>
+              <div style="font-size:28px;font-weight:800;color:#8b949e;">
+                {len(analyses)}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;">Today's drop</div>
+              <div style="font-size:28px;font-weight:800;color:#a5d6ff;">
+                {drop_pts:+.1f} pts</div>
+            </div>
+          </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Live options chain table ──────────────────────────────────────────────
+    st.markdown("---")
+    section(
+        "Live 0DTE Chain — Today's Movers",
+        f"{lot_ticker} {'calls' if is_calls else 'puts'} · day low → high gain% · sweet spot = strikes +1 to +8 pts from intraday low"
+    )
+
+    if analyses:
+        rows_html = ""
+        for a in analyses:
+            c = a.contract
+            if c.day_low <= 0: continue
+            gain_pct = a.day_gain_pct
+            if gain_pct >= 1000:
+                gain_c = "#ffd633"; badge = "🌟 JACKPOT"
+            elif gain_pct >= 500:
+                gain_c = "#f85149"; badge = "🔥 FIRE"
+            elif gain_pct >= 100:
+                gain_c = "#3fb950"; badge = "📈 HOT"
+            else:
+                gain_c = "#8b949e"; badge = ""
+            sw = "border-left:3px solid #ffd633;" if a.is_sweet_spot else ""
+            dist_c = "#ffd633" if a.is_sweet_spot else "#8b949e"
+            rows_html += f"""
+            <tr style="{sw}">
+              <td style="padding:9px 12px;font-weight:800;font-size:14px;
+                         color:#e6edf3;">${c.strike:.0f}</td>
+              <td style="padding:9px 12px;font-size:12px;color:{dist_c};font-weight:700;">
+                {a.dist_from_underlying_low:+.1f} pts</td>
+              <td style="padding:9px 12px;font-size:12px;color:#8b949e;">
+                {a.dist_from_underlying_open:+.1f} pts</td>
+              <td style="padding:9px 12px;font-size:12px;color:#8b949e;">
+                ${c.day_low:.3f}</td>
+              <td style="padding:9px 12px;font-size:13px;font-weight:800;color:#3fb950;">
+                ${c.day_high:.2f}</td>
+              <td style="padding:9px 12px;font-size:15px;font-weight:800;color:{gain_c};">
+                {gain_pct:,.0f}%</td>
+              <td style="padding:9px 12px;font-size:11px;color:{gain_c};">{badge}</td>
+              <td style="padding:9px 12px;font-size:11px;color:#8b949e;">
+                Δ{c.delta:.2f}  IV{c.implied_vol*100:.0f}%</td>
+            </tr>"""
+
+        st.markdown(
+            f"""<div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                          background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+              <thead>
+                <tr style="background:#161b22;border-bottom:1px solid #30363d;">
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Strike</th>
+                  <th style="padding:9px 12px;color:#ffd633;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Dist from Low ★</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Dist from Open</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Day Low $</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Day High $</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Max Gain %</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Signal</th>
+                  <th style="padding:9px 12px;color:#8b949e;font-size:10px;text-align:left;
+                             text-transform:uppercase;letter-spacing:.07em;">Greeks</th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table></div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No contracts in range — options chain may not be available yet or market is closed.")
+
+    # ── Strike recommendation card ────────────────────────────────────────────
+    if has_live and analyses:
+        st.markdown("---")
+        section(
+            "Strike Recommendation — What to Buy at the Low",
+            f"If {lot_ticker} reverses from ${day_low:.2f} back toward open ${day_open:.2f} — "
+            f"expected +{drop_pts:.1f} pt recovery"
+        )
+
+        recs = recommend_strikes(day_open, day_low, contracts)
+        if recs:
+            rec_html = ""
+            for r in recs[:6]:
+                is_best = r.est_gain_pct == max(x.est_gain_pct for x in recs)
+                bg  = "#0d1f14" if is_best else "#0d1117"
+                bdr = "#3fb950" if is_best else "#30363d"
+                tag = f"""<div style="font-size:9px;background:#0d1f14;border:1px solid #3fb950;
+                              color:#3fb950;padding:2px 6px;border-radius:4px;margin-bottom:6px;
+                              display:inline-block;">BEST R/R</div><br>""" if is_best else ""
+                rec_html += f"""
+                <div style="background:{bg};border:2px solid {bdr};border-radius:12px;
+                            padding:18px;flex:1;min-width:140px;text-align:center;">
+                  {tag}
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.07em;margin-bottom:4px;">
+                    Call ${r.strike:.0f}</div>
+                  <div style="font-size:11px;color:#8b949e;margin-bottom:8px;">
+                    +{r.dist_from_low:.0f} pts from low</div>
+                  <div style="font-size:13px;color:#8b949e;margin-bottom:2px;">
+                    Entry: <span style="color:#e6edf3;font-weight:800;">
+                      ${r.est_entry_price:.2f}</span></div>
+                  <div style="font-size:13px;color:#8b949e;margin-bottom:8px;">
+                    Target: <span style="color:#3fb950;font-weight:800;">
+                      ${r.est_target_price:.2f}</span></div>
+                  <div style="font-size:22px;font-weight:800;color:#ffd633;">
+                    {r.est_gain_pct:,.0f}%</div>
+                  <div style="color:#8b949e;font-size:10px;margin-top:6px;">
+                    {r.note}</div>
+                </div>"""
+            st.markdown(
+                f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{rec_html}</div>',
+                unsafe_allow_html=True,
+            )
+        st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+
+    # ── Historical pattern table ──────────────────────────────────────────────
+    st.markdown("---")
+    section(
+        "Historical 1000%+ Probability by Drop Magnitude",
+        "2-year SPY daily data · BSM model estimates · When intraday drop is X pts from open — "
+        "how often does the call reversal produce 1000%+"
+    )
+
+    mult_table = drop_band_multiplier_table()
+    today_band_lbl = None
+    if has_live:
+        for row in mult_table:
+            band = row["band"]
+            lo_str, hi_str = band.split("–")
+            try:
+                lo_v = float(lo_str.strip().replace("+",""))
+                hi_v = float(hi_str.split()[0].strip().replace("+",""))
+                if lo_v <= drop_pts < hi_v:
+                    today_band_lbl = band
+                    break
+            except Exception:
+                pass
+
+    rows_html = ""
+    for row in mult_table:
+        is_today = (row["band"] == today_band_lbl)
+        pct = row["pct_1000plus"]
+        n   = row["n"]
+        rec = row["recovery_needed"]
+        note = row["note"]
+        if pct >= 25:   bar_c = "#ffd633"
+        elif pct >= 10: bar_c = "#d29922"
+        else:            bar_c = "#30363d"
+        bar_w = max(4, pct * 3)
+        hl = "border-left:3px solid #ffd633;background:#1c1a0a;" if is_today else ""
+        today_badge = (
+            "&nbsp;<span style='font-size:9px;background:#1c1a0a;border:1px solid #ffd633;"
+            "color:#ffd633;padding:1px 5px;border-radius:4px;'>TODAY</span>"
+            if is_today else ""
+        )
+        rows_html += f"""
+        <tr style="{hl}">
+          <td style="padding:9px 14px;font-size:12px;font-weight:{'800' if is_today else '400'};
+                     color:{'#ffd633' if is_today else '#e6edf3'};">
+            {row['band']}{today_badge}</td>
+          <td style="padding:9px 14px;font-size:12px;color:#8b949e;">{n}</td>
+          <td style="padding:9px 14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="background:{bar_c};height:8px;width:{bar_w}px;
+                          border-radius:4px;"></div>
+              <span style="font-size:14px;font-weight:800;color:{bar_c};">{pct}%</span>
+            </div>
+          </td>
+          <td style="padding:9px 14px;font-size:12px;color:#8b949e;">
+            {f'+{rec:.1f} pts' if rec > 0 else '—'}</td>
+          <td style="padding:9px 14px;font-size:11px;color:#8b949e;">{note}</td>
+        </tr>"""
+
+    st.markdown(
+        f"""<div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;
+                      background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;">
+          <thead>
+            <tr style="background:#161b22;border-bottom:1px solid #30363d;">
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Drop from Open</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Sessions (2yr)</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">1000%+ Probability</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Avg Recovery Needed</th>
+              <th style="padding:9px 14px;color:#8b949e;font-size:10px;text-align:left;
+                         text-transform:uppercase;letter-spacing:.07em;">Status</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table></div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── How it works explainer ────────────────────────────────────────────────
+    st.markdown("---")
+    section("How the 1000%+ Setup Works",
+            "The math behind today's SPY $737 call: $0.04 → $1.84 = 4,500%")
+    st.markdown(
+        f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;
+                        padding:24px 28px;font-family:Inter,sans-serif;line-height:1.8;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+            <div>
+              <div style="color:#ffd633;font-size:13px;font-weight:800;
+                          margin-bottom:12px;text-transform:uppercase;letter-spacing:.06em;">
+                The Pattern</div>
+              <div style="color:#c9d1d9;font-size:13px;">
+                <span style="color:#a5d6ff;font-weight:700;">1.</span>
+                  Underlying opens (e.g. SPY at $736.89)<br>
+                <span style="color:#a5d6ff;font-weight:700;">2.</span>
+                  Early sell-off drives price to intraday low ($731.83 = −5 pts)<br>
+                <span style="color:#a5d6ff;font-weight:700;">3.</span>
+                  Calls near the OPEN strike become deep OTM → worth pennies<br>
+                <span style="color:#a5d6ff;font-weight:700;">4.</span>
+                  Reversal happens — price snaps back to open or higher<br>
+                <span style="color:#a5d6ff;font-weight:700;">5.</span>
+                  Those same calls go from pennies to $1–$6 → 1000–6000%
+              </div>
+            </div>
+            <div>
+              <div style="color:#ffd633;font-size:13px;font-weight:800;
+                          margin-bottom:12px;text-transform:uppercase;letter-spacing:.06em;">
+                Today's Example</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div style="background:#161b22;border-radius:8px;padding:10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;">SPY Open</div>
+                  <div style="color:#e6edf3;font-weight:800;font-size:15px;">${day_open:.2f}</div>
+                </div>
+                <div style="background:#161b22;border-radius:8px;padding:10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;">SPY Low</div>
+                  <div style="color:#f85149;font-weight:800;font-size:15px;">${day_low:.2f}</div>
+                </div>
+                <div style="background:#161b22;border-radius:8px;padding:10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;">$737 Call @ Low</div>
+                  <div style="color:#8b949e;font-weight:800;font-size:15px;">$0.04</div>
+                </div>
+                <div style="background:#161b22;border-radius:8px;padding:10px;text-align:center;">
+                  <div style="color:#8b949e;font-size:10px;">$737 Call High</div>
+                  <div style="color:#3fb950;font-weight:800;font-size:15px;">$1.84</div>
+                </div>
+              </div>
+              <div style="background:#1c1a0a;border:1px solid #ffd633;border-radius:8px;
+                          padding:12px;text-align:center;margin-top:10px;">
+                <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Actual gain</div>
+                <div style="color:#ffd633;font-weight:800;font-size:28px;">4,500%</div>
+                <div style="color:#8b949e;font-size:11px;">$0.04 → $1.84 per contract</div>
+              </div>
+            </div>
+          </div>
+          <div style="border-top:1px solid #30363d;margin-top:20px;padding-top:16px;">
+            <div style="color:#8b949e;font-size:12px;line-height:1.7;">
+              <span style="color:#ffd633;font-weight:700;">Sweet spot rule:</span>
+              Buy calls at strikes <strong style="color:#fff;">+1 to +8 pts above the intraday low</strong>
+              (= near the open price, OTM by the drop amount).
+              These are cheap because they need the full reversal to become ATM/ITM.
+              Risk: if no reversal, you lose 100% of a small position.<br>
+              <span style="color:#ffd633;font-weight:700;">Timing:</span>
+              Best entries are when the low is confirmed (price starts moving back up).
+              Use the Reversal Levels page S3 pivot + VWAP as confluence.
+            </div>
+          </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
