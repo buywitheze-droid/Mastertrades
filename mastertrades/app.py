@@ -1,6 +1,5 @@
 """Mastertrades — Command Center & Trading Dashboard.
 
-A Streamlit web app wrapping the Mastertrades Python trading analytics engine.
 Pages:
   1. Command Center   — Today's jackpot signals for SPY/QQQ/IWM/AAPL
   2. Scanner          — Multi-ticker volatility scanner (broader universe)
@@ -15,7 +14,6 @@ import sys
 import os
 from pathlib import Path
 
-# Make sure 'src' is importable from this directory
 APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP_DIR))
 
@@ -43,6 +41,25 @@ ACCT_PATH  = DATA_DIR / "account_state.json"
 DATA_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 
+# ─── Global CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+  /* Tighten default Streamlit padding */
+  .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+  /* Remove top margin from metric labels */
+  [data-testid="metric-container"] { background: #161b22; border-radius: 10px;
+    padding: 12px 16px !important; border: 1px solid rgba(255,255,255,0.08); }
+  /* Dataframe headers */
+  thead tr th { font-size: 11px !important; text-transform: uppercase;
+    letter-spacing: .06em !important; color: #8b949e !important; }
+  /* Hide the hamburger menu & footer */
+  #MainMenu { visibility: hidden; }
+  footer { visibility: hidden; }
+  /* Section divider */
+  hr { border-color: rgba(255,255,255,0.06) !important; margin: 1.4rem 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,13 +72,22 @@ def signal_color(signal: str) -> str:
     }.get(signal or "SKIP", "#8b949e")
 
 
-def signal_emoji(signal: str) -> str:
+def signal_label(signal: str) -> str:
     return {
         "GO_ULTRA_JACKPOT": "🌟 ULTRA JACKPOT",
         "GO_JACKPOT":       "✅ JACKPOT",
         "GO_HOT":           "🔥 HOT",
         "SKIP":             "⏭ SKIP",
     }.get(signal or "SKIP", "⏭ SKIP")
+
+
+def signal_action(signal: str) -> str:
+    return {
+        "GO_ULTRA_JACKPOT": "Both models firing at peak confidence — size up, trade aggressively.",
+        "GO_JACKPOT":       "Both vol + P&L models confirm — this is a trade day.",
+        "GO_HOT":           "Volatility model firing, P&L model neutral — trade smaller or wait for confirmation.",
+        "SKIP":             "Models expect a calm session — no setup, stand by.",
+    }.get(signal or "SKIP", "Stand by.")
 
 
 def fmt_pct(v, decimals=1):
@@ -74,6 +100,18 @@ def fmt_dollar(v):
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "—"
     return f"${v:,.2f}"
+
+
+def section(title: str, subtitle: str = ""):
+    sub_html = f'<div style="color:#8b949e;font-size:12px;margin-top:2px;">{subtitle}</div>' if subtitle else ""
+    st.markdown(
+        f"""<div style="margin:1.6rem 0 0.8rem;">
+          <span style="font-size:17px;font-weight:800;color:#e6edf3;
+                       letter-spacing:.01em;">{title}</span>
+          {sub_html}
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 
 # ─── Cached data loaders ─────────────────────────────────────────────────────
@@ -140,16 +178,32 @@ def load_account():
 
 # ─── Sidebar navigation ───────────────────────────────────────────────────────
 
+PAGE_META = {
+    "Command Center":  "Today's trade signals",
+    "Scanner":         "Ranked volatility universe",
+    "Gap Reversal":    "Gap fill & reversal setups",
+    "Account Tracker": "Equity curve & trade log",
+    "Weekday Patterns":"Vol by day of week",
+}
+
 with st.sidebar:
-    st.markdown("## 📈 Mastertrades")
+    st.markdown(
+        """<div style="font-size:20px;font-weight:900;color:#fff;
+                       letter-spacing:-.01em;margin-bottom:4px;">📈 Mastertrades</div>
+           <div style="color:#8b949e;font-size:11px;margin-bottom:16px;">
+             0DTE Options Intelligence</div>""",
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
     page = st.radio(
         "Navigate",
-        ["Command Center", "Scanner", "Gap Reversal", "Account Tracker", "Weekday Patterns"],
+        list(PAGE_META.keys()),
         label_visibility="collapsed",
+        format_func=lambda p: p,
     )
+    st.caption(PAGE_META[page])
     st.markdown("---")
-    st.caption(f"As of: {datetime.now().strftime('%b %d %Y, %H:%M')}")
+    st.caption(f"Updated: {datetime.now().strftime('%b %d, %H:%M')}")
     if st.button("🔄 Refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -160,9 +214,6 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if page == "Command Center":
-    st.title("Command Center")
-    st.caption("Daily jackpot signals — SPY · QQQ · IWM · AAPL")
-
     JACKPOT_TICKERS = ("SPY", "QQQ", "IWM", "AAPL")
 
     with st.spinner("Running scanner… (first run trains ML models, ~60 s)"):
@@ -182,92 +233,129 @@ if page == "Command Center":
         st.stop()
 
     # ── Hero verdict ──────────────────────────────────────────────────────────
-    # Pick the strongest signal across all tickers
     rank_order = {"GO_ULTRA_JACKPOT": 4, "GO_JACKPOT": 3, "GO_HOT": 2, "SKIP": 1}
     best_row = max(rows, key=lambda r: rank_order.get(r.signal, 0))
     sig = best_row.signal
+    hero_border = signal_color(sig)
 
     hero_bg = {
-        "GO_ULTRA_JACKPOT": "linear-gradient(135deg,#1a1208,#3d2f10,#1a1208)",
-        "GO_JACKPOT":       "linear-gradient(135deg,#0d1f14,#1c4a30)",
-        "GO_HOT":           "linear-gradient(135deg,#1f1808,#463812)",
-        "SKIP":             "linear-gradient(135deg,#0d1117,#1a2133)",
-    }.get(sig, "")
-    hero_border = signal_color(sig)
+        "GO_ULTRA_JACKPOT": "linear-gradient(135deg,#1a1208,#2d2008)",
+        "GO_JACKPOT":       "linear-gradient(135deg,#0d1f14,#12311e)",
+        "GO_HOT":           "linear-gradient(135deg,#1f1808,#2e2210)",
+        "SKIP":             "linear-gradient(135deg,#0d1117,#131920)",
+    }.get(sig, "linear-gradient(135deg,#0d1117,#131920)")
+
+    # Count trade vs skip tickers
+    trade_tickers = [r.ticker for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
+    hot_tickers   = [r.ticker for r in rows if r.signal == "GO_HOT"]
 
     st.markdown(
         f"""
         <div style="background:{hero_bg};border:2px solid {hero_border};
-                    border-radius:16px;padding:28px 32px;margin-bottom:20px;">
-          <div style="color:#8b949e;font-size:11px;letter-spacing:.14em;
-                      text-transform:uppercase;font-weight:700;margin-bottom:6px;">
-            Today's verdict — {datetime.now().strftime('%A %b %d')}
+                    border-radius:16px;padding:28px 32px;margin-bottom:24px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div>
+              <div style="color:#8b949e;font-size:11px;letter-spacing:.14em;
+                          text-transform:uppercase;font-weight:700;margin-bottom:8px;">
+                {datetime.now().strftime('%A, %B %d')} · Today's Verdict
+              </div>
+              <div style="font-size:38px;font-weight:900;color:{hero_border};
+                          margin-bottom:10px;line-height:1;">{signal_label(sig)}</div>
+              <div style="font-size:14px;color:#c9d1d9;max-width:520px;line-height:1.5;">
+                {signal_action(sig)}
+              </div>
+            </div>
+            <div style="text-align:right;min-width:140px;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;margin-bottom:4px;">Lead ticker</div>
+              <div style="font-size:32px;font-weight:900;color:#fff;">{best_row.ticker}</div>
+              <div style="color:{hero_border};font-size:13px;font-weight:700;">
+                P(vol) {fmt_pct(best_row.p_vol)} · P(pnl) {fmt_pct(best_row.p_pnl)}
+              </div>
+            </div>
           </div>
-          <h1 style="font-size:42px;margin:0 0 8px;font-weight:900;
-                     color:{hero_border};">{signal_emoji(sig)}</h1>
-          <div style="color:#8b949e;font-size:14px;">
-            Strongest signal: <strong style="color:#fff;">{best_row.ticker}</strong>
-            &nbsp;·&nbsp; P(vol)&nbsp;<strong style="color:#fff;">
-            {fmt_pct(best_row.p_vol)}</strong>
-            &nbsp;·&nbsp; P(pnl)&nbsp;<strong style="color:#fff;">
-            {fmt_pct(best_row.p_pnl)}</strong>
-          </div>
+          {
+            f'<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);'
+            f'font-size:12px;color:#8b949e;">Trade: <strong style="color:#3fb950;">'
+            f'{", ".join(trade_tickers)}</strong></div>' if trade_tickers else ""
+          }
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     # ── Ticker cards ──────────────────────────────────────────────────────────
-    st.subheader("Per-Ticker Signals")
+    section("Per-Ticker Signals")
     cols = st.columns(len(rows))
     for col, row in zip(cols, rows):
         sig_c = signal_color(row.signal)
+        p_vol_v = fmt_pct(row.p_vol)
+        p_pnl_v = fmt_pct(row.p_pnl)
+        close_v = fmt_dollar(row.last_close)
+        pct_chg = getattr(row, "pct_change", None)
+        rsi_v   = getattr(row, "rsi14", None)
+        chg_c   = "#3fb950" if (pct_chg or 0) >= 0 else "#f85149"
+        chg_str = f"{pct_chg*100:+.2f}%" if pct_chg is not None and not math.isnan(pct_chg) else "—"
+        rsi_str = f"{rsi_v:.0f}" if rsi_v is not None and not math.isnan(rsi_v) else "—"
+
+        is_trade = row.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")
+        glow = f"box-shadow:0 0 18px {sig_c}44;" if is_trade else ""
+
         with col:
             st.markdown(
                 f"""
                 <div style="background:#161b22;border:2px solid {sig_c};
-                            border-radius:12px;padding:18px 16px;text-align:center;">
-                  <div style="font-size:26px;font-weight:900;color:#fff;">{row.ticker}</div>
-                  <div style="display:inline-block;margin:8px 0;padding:5px 12px;
-                              border-radius:5px;background:{sig_c};
-                              color:#0c1117;font-size:11px;font-weight:800;
-                              letter-spacing:.05em;">{row.signal}</div>
-                  <div style="color:#8b949e;font-size:11px;margin-top:4px;">
-                    Close: <strong style="color:#fff;">{fmt_dollar(row.last_close)}</strong>
+                            border-radius:14px;padding:20px 16px;{glow}">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;
+                              margin-bottom:12px;">
+                    <span style="font-size:24px;font-weight:900;color:#fff;">{row.ticker}</span>
+                    <span style="background:{sig_c};color:#0c1117;font-size:9px;
+                                 font-weight:900;padding:3px 8px;border-radius:4px;
+                                 letter-spacing:.05em;">{row.signal.replace("GO_","")}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;row-gap:10px;
+                              column-gap:8px;font-size:11px;">
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">P(vol)</div>
+                      <div style="color:{sig_c};font-size:18px;font-weight:800;
+                                  line-height:1.2;">{p_vol_v}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">P(pnl)</div>
+                      <div style="color:{sig_c};font-size:18px;font-weight:800;
+                                  line-height:1.2;">{p_pnl_v}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Close</div>
+                      <div style="color:#e6edf3;font-weight:700;">{close_v}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">Chg %</div>
+                      <div style="color:{chg_c};font-weight:700;">{chg_str}</div>
+                    </div>
+                    <div style="grid-column:1/-1;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;">RSI(14)</div>
+                      <div style="color:#e6edf3;font-weight:700;">{rsi_str}</div>
+                    </div>
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    # ── Detailed score table ──────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Model Scores")
-
-    table_rows = []
-    for r in rows:
-        table_rows.append({
-            "Ticker":        r.ticker,
-            "Signal":        r.signal,
-            "P(vol)":        fmt_pct(r.p_vol),
-            "P(pnl)":        fmt_pct(r.p_pnl),
-            "P(weekly)":     fmt_pct(getattr(r, "p_weekly", float("nan"))),
-            "Last Close":    fmt_dollar(r.last_close),
-            "WR (hist)":     fmt_pct(getattr(r, "win_rate_history", float("nan"))),
-            "Avg Ret (hist)": fmt_pct(getattr(r, "avg_ret_history", float("nan"))),
-        })
-
-    df_table = pd.DataFrame(table_rows)
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
-
-    # ── Trade tickets (only for GO_JACKPOT / GO_ULTRA_JACKPOT) ───────────────
+    # ── Trade tickets ─────────────────────────────────────────────────────────
     trade_rows = [r for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
     if trade_rows:
         st.markdown("---")
-        st.subheader("Trade Tickets")
+        section("Trade Tickets", "Suggested sizing based on your account settings below")
 
         with st.sidebar:
-            st.markdown("### Trade sizing")
+            st.markdown("---")
+            st.markdown("**Trade Sizing**")
             equity_input = st.number_input("Account equity ($)", value=500.0, min_value=10.0, step=50.0)
             risk_frac = st.slider("Risk per trade (%)", 5, 25, 10) / 100
 
@@ -276,25 +364,56 @@ if page == "Command Center":
         for r in trade_rows:
             ticket = trade_ticket(r, equity_input, risk_frac)
             border_c = "#ffd633" if r.signal == "GO_ULTRA_JACKPOT" else "#3fb950"
+            action_label = "⚡ SIZE UP — ULTRA JACKPOT" if r.signal == "GO_ULTRA_JACKPOT" else "✅ TRADE — JACKPOT"
+
             st.markdown(
                 f"""
-                <div style="background:rgba(63,185,80,0.1);border:1px dashed {border_c};
-                            border-radius:10px;padding:16px 20px;margin-bottom:12px;">
-                  <div style="font-weight:800;color:{border_c};font-size:13px;
-                              text-transform:uppercase;letter-spacing:.06em;
-                              margin-bottom:10px;">{r.ticker} — {r.signal}</div>
-                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
-                    <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Strike</div>
-                         <div style="color:#fff;font-size:18px;font-weight:700;">{fmt_dollar(ticket["strike"])}</div></div>
-                    <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Contracts</div>
-                         <div style="color:#fff;font-size:18px;font-weight:700;">{ticket["n_contracts"]}</div></div>
-                    <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Risk $</div>
-                         <div style="color:#fff;font-size:18px;font-weight:700;">{fmt_dollar(ticket["actual_risk"])}</div></div>
-                    <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Win Prob</div>
-                         <div style="color:#3fb950;font-size:18px;font-weight:700;">{fmt_pct(ticket["win_prob"])}</div></div>
+                <div style="background:rgba(22,27,34,0.9);border:1px solid {border_c};
+                            border-radius:12px;padding:20px 24px;margin-bottom:14px;
+                            box-shadow:0 0 20px {border_c}22;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;
+                              margin-bottom:16px;">
+                    <div>
+                      <div style="color:{border_c};font-size:13px;font-weight:900;
+                                  text-transform:uppercase;letter-spacing:.07em;">{action_label}</div>
+                      <div style="color:#8b949e;font-size:11px;margin-top:2px;">{r.ticker} · 0DTE ATM option</div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Win Prob</div>
+                      <div style="color:{border_c};font-size:24px;font-weight:900;">{fmt_pct(ticket["win_prob"])}</div>
+                    </div>
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;margin-bottom:4px;">Strike</div>
+                      <div style="color:#fff;font-size:22px;font-weight:800;">{fmt_dollar(ticket["strike"])}</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;margin-bottom:4px;">Contracts</div>
+                      <div style="color:#fff;font-size:22px;font-weight:800;">{ticket["n_contracts"]}</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:12px;">
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                                  letter-spacing:.07em;margin-bottom:4px;">Max Risk</div>
+                      <div style="color:#f85149;font-size:22px;font-weight:800;">{fmt_dollar(ticket["actual_risk"])}</div>
+                    </div>
                   </div>
                 </div>
                 """,
+                unsafe_allow_html=True,
+            )
+    else:
+        # No trade signals — show skip message
+        skip_tickers = [r.ticker for r in rows if r.signal == "SKIP"]
+        if skip_tickers:
+            st.markdown(
+                f"""<div style="background:#161b22;border:1px solid #8b949e;border-radius:10px;
+                               padding:16px 20px;margin-top:12px;color:#8b949e;font-size:13px;">
+                  ⏭ No trade setups today — {", ".join(skip_tickers)} all showing SKIP.
+                  Check back at open or after any pre-market catalyst.
+                </div>""",
                 unsafe_allow_html=True,
             )
 
@@ -304,9 +423,6 @@ if page == "Command Center":
 # ══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Scanner":
-    st.title("Multi-Ticker Scanner")
-    st.caption("P(volatile day) ranked across the full universe")
-
     DEFAULT_UNIVERSE = [
         "SPY", "QQQ", "IWM", "DIA",
         "AAPL", "MSFT", "NVDA", "GOOGL",
@@ -314,9 +430,10 @@ elif page == "Scanner":
     ]
 
     with st.sidebar:
-        st.markdown("### Universe")
+        st.markdown("---")
+        st.markdown("**Universe**")
         ticker_input = st.text_area(
-            "Tickers (one per line or comma-separated)",
+            "Tickers (one per line)",
             value="\n".join(DEFAULT_UNIVERSE),
             height=200,
         )
@@ -342,67 +459,110 @@ elif page == "Scanner":
         st.warning("No results. Try refreshing or check your ticker list.")
         st.stop()
 
-    # Lift badges
-    def lift_badge(lift):
-        if pd.isna(lift):
-            return "—"
-        if lift >= 3.0:
-            return "🔴 EXTREME"
-        if lift >= 2.0:
-            return "🟠 HIGH"
-        if lift >= 1.3:
-            return "🟡 ELEVATED"
-        if lift >= 0.8:
-            return "⚪ NORMAL"
-        return "🔵 CALM"
+    def lift_label(lift):
+        if pd.isna(lift): return ("—", "#8b949e")
+        if lift >= 3.0:   return ("EXTREME", "#f85149")
+        if lift >= 2.0:   return ("HIGH",    "#d29922")
+        if lift >= 1.3:   return ("ELEVATED","#ffd633")
+        if lift >= 0.8:   return ("NORMAL",  "#58a6ff")
+        return ("CALM", "#8b949e")
 
-    display_df = df.copy()
-    display_df["Verdict"] = display_df["lift"].apply(lift_badge)
+    df_s = df.copy()
+    if "p_vol" in df_s.columns:
+        df_s = df_s.sort_values("p_vol", ascending=False).reset_index(drop=True)
 
-    cols_to_show = ["ticker", "p_vol", "lift", "Verdict", "last_close",
-                    "pct_change", "rsi14", "bb_pos", "lag1_range",
-                    "range_compression", "abs_gap_pct"]
-    cols_to_show = [c for c in cols_to_show if c in display_df.columns]
+    # ── Top picks (top 3) ─────────────────────────────────────────────────────
+    section("Top Picks Today", "Ranked by P(volatile day) — highest conviction first")
 
-    rename_map = {
-        "ticker": "Ticker",
-        "p_vol": "P(vol)",
-        "lift": "Lift",
-        "last_close": "Close",
-        "pct_change": "Chg %",
-        "rsi14": "RSI(14)",
-        "bb_pos": "BB Pos",
-        "lag1_range": "Lag1 Range",
-        "range_compression": "Range Cmpr",
-        "abs_gap_pct": "Gap %",
-    }
+    top3 = df_s.head(3)
+    cols = st.columns(len(top3))
+    for i, (_, row) in enumerate(top3.iterrows()):
+        p_vol  = row.get("p_vol",  float("nan"))
+        lift   = row.get("lift",   float("nan"))
+        close  = row.get("last_close", float("nan"))
+        chg    = row.get("pct_change", float("nan"))
+        rsi    = row.get("rsi14",  float("nan"))
+        lift_txt, lift_c = lift_label(lift)
+        chg_c  = "#3fb950" if (not math.isnan(chg) and chg >= 0) else "#f85149"
+        pvol_c = "#ffd633" if (not math.isnan(p_vol) and p_vol >= 0.65) else (
+                  "#3fb950" if (not math.isnan(p_vol) and p_vol >= 0.55) else "#58a6ff")
+        rank_badge = ["#1", "#2", "#3"][i]
 
-    display_df = display_df[cols_to_show].rename(columns=rename_map)
-
-    # Format numeric cols
-    for c in ["P(vol)", "Chg %", "Lag1 Range", "Range Cmpr", "Gap %"]:
-        if c in display_df.columns:
-            display_df[c] = display_df[c].apply(
-                lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
+        with cols[i]:
+            st.markdown(
+                f"""
+                <div style="background:#161b22;border:2px solid {pvol_c};
+                            border-radius:14px;padding:20px 18px;
+                            box-shadow:0 0 16px {pvol_c}33;">
+                  <div style="display:flex;justify-content:space-between;
+                              align-items:baseline;margin-bottom:14px;">
+                    <span style="font-size:22px;font-weight:900;color:#fff;">{row.get("ticker","?")}</span>
+                    <span style="color:#8b949e;font-size:13px;font-weight:700;">{rank_badge}</span>
+                  </div>
+                  <div style="font-size:42px;font-weight:900;color:{pvol_c};
+                              line-height:1;margin-bottom:6px;">
+                    {fmt_pct(p_vol)}</div>
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.07em;margin-bottom:14px;">P(volatile day)</div>
+                  <div style="display:flex;justify-content:space-between;
+                              align-items:center;margin-bottom:10px;">
+                    <span style="background:{lift_c}22;color:{lift_c};font-size:10px;
+                                 font-weight:800;padding:3px 8px;border-radius:4px;
+                                 letter-spacing:.05em;">{lift_txt}</span>
+                    <span style="color:#8b949e;font-size:11px;">
+                      Lift {lift:.2f}x</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Close</div>
+                      <div style="color:#e6edf3;font-weight:700;">{fmt_dollar(close)}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Chg %</div>
+                      <div style="color:{chg_c};font-weight:700;">
+                        {f"{chg*100:+.2f}%" if not math.isnan(chg) else "—"}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">RSI(14)</div>
+                      <div style="color:#e6edf3;font-weight:700;">
+                        {f"{rsi:.0f}" if not math.isnan(rsi) else "—"}</div>
+                    </div>
+                    <div>
+                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Gap %</div>
+                      <div style="color:#e6edf3;font-weight:700;">
+                        {f"{row.get('abs_gap_pct',float('nan'))*100:.2f}%" if not math.isnan(row.get("abs_gap_pct",float("nan"))) else "—"}</div>
+                    </div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-    for c in ["RSI(14)", "BB Pos"]:
-        if c in display_df.columns:
-            display_df[c] = display_df[c].apply(
-                lambda v: f"{v:.1f}" if pd.notna(v) else "—"
-            )
-    if "Lift" in display_df.columns:
-        display_df["Lift"] = display_df["Lift"].apply(
-            lambda v: f"{v:.2f}x" if pd.notna(v) else "—"
-        )
-    if "Close" in display_df.columns:
-        display_df["Close"] = display_df["Close"].apply(
-            lambda v: f"${v:,.2f}" if pd.notna(v) else "—"
-        )
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-
+    # ── Full ranked list ──────────────────────────────────────────────────────
     st.markdown("---")
-    st.caption("Lift = P(vol) ÷ base-rate. >1.3 = Elevated · >2.0 = High · >3.0 = Extreme")
+    section("Full Ranked List", "All tickers sorted by P(volatile day) — higher = more expected movement")
+
+    table_rows = []
+    for rank, (_, row) in enumerate(df_s.iterrows(), 1):
+        p_vol  = row.get("p_vol",  float("nan"))
+        lift   = row.get("lift",   float("nan"))
+        close  = row.get("last_close", float("nan"))
+        chg    = row.get("pct_change", float("nan"))
+        rsi    = row.get("rsi14",  float("nan"))
+        lift_txt, _ = lift_label(lift)
+        table_rows.append({
+            "#":         rank,
+            "Ticker":    row.get("ticker", "?"),
+            "P(vol)":    fmt_pct(p_vol),
+            "Lift":      f"{lift:.2f}x" if not math.isnan(lift) else "—",
+            "Verdict":   lift_txt,
+            "Close":     fmt_dollar(close),
+            "Chg %":     f"{chg*100:+.2f}%" if not math.isnan(chg) else "—",
+            "RSI(14)":   f"{rsi:.0f}" if not math.isnan(rsi) else "—",
+        })
+
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    st.caption("Lift = P(vol) ÷ base-rate   ·   Extreme >3.0  ·  High >2.0  ·  Elevated >1.3")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -410,15 +570,11 @@ elif page == "Scanner":
 # ══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Gap Reversal":
-    st.title("Gap Reversal Scanner")
-    st.caption(
-        "Detect overnight gaps · track historical fill rates · measure post-fill reversals"
-    )
-
     GAP_UNIVERSE = ["SPY", "QQQ", "IWM", "DIA", "AAPL", "MSFT", "NVDA", "TSLA", "AMD"]
 
     with st.sidebar:
-        st.markdown("### Settings")
+        st.markdown("---")
+        st.markdown("**Settings**")
         gap_tickers = st.multiselect(
             "Tickers to scan",
             options=GAP_UNIVERSE + ["META", "AMZN", "GOOGL"],
@@ -430,7 +586,6 @@ elif page == "Gap Reversal":
             "Deep-dive ticker", gap_tickers if gap_tickers else ["SPY"], index=0
         )
 
-    # ── Signal colour helpers ─────────────────────────────────────────────────
     def gap_signal_color(sig: str) -> str:
         return {
             "WATCH_FILL": "#3fb950",
@@ -440,16 +595,31 @@ elif page == "Gap Reversal":
             "SMALL_GAP":  "#6e7681",
         }.get(sig, "#8b949e")
 
-    def gap_dir_label(d: str, pct: float) -> str:
-        if d == "up":
-            return f"↑ Gap Up  {pct*100:+.2f}%"
-        if d == "down":
-            return f"↓ Gap Down {pct*100:+.2f}%"
-        return "— No Gap"
+    def fill_progress_bar(open_price: float, fill_level: float, current: float | None) -> str:
+        """Visual bar from open toward fill level."""
+        try:
+            if current is None or open_price == fill_level:
+                pct = 0.0
+            else:
+                dist_total = abs(fill_level - open_price)
+                dist_done  = abs(current - open_price)
+                pct = min(dist_done / dist_total * 100, 100)
+        except Exception:
+            pct = 0.0
+        bar_c = "#3fb950" if pct >= 80 else "#d29922" if pct >= 40 else "#58a6ff"
+        return (
+            f'<div style="height:6px;background:rgba(139,148,158,0.15);'
+            f'border-radius:3px;overflow:hidden;margin:6px 0 2px;">'
+            f'  <div style="width:{pct:.0f}%;height:100%;background:{bar_c};'
+            f'border-radius:3px;transition:width .3s;"></div></div>'
+            f'<div style="display:flex;justify-content:space-between;'
+            f'font-size:9px;color:#8b949e;">'
+            f'<span>Open ${open_price:.2f}</span>'
+            f'<span style="color:{bar_c};font-weight:700;">{pct:.0f}% to fill</span>'
+            f'<span>Fill ${fill_level:.2f}</span></div>'
+        )
 
-    # ── Multi-ticker today's gap scan ─────────────────────────────────────────
-    st.subheader("Today's Gaps")
-
+    # ── Load tickers ──────────────────────────────────────────────────────────
     if not gap_tickers:
         st.warning("Select at least one ticker in the sidebar.")
         st.stop()
@@ -469,74 +639,99 @@ elif page == "Gap Reversal":
             for e in load_errors:
                 st.text(e)
 
-    # Filter to only tickers with a real gap today
-    gap_today = [(tkr, tod, sb) for tkr, tod, sb in today_rows
-                 if tod.gap_dir in ("up", "down")]
-    no_gap    = [(tkr, tod, sb) for tkr, tod, sb in today_rows
-                 if tod.gap_dir not in ("up", "down")]
+    gap_today = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir in ("up", "down")]
+    no_gap    = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir not in ("up", "down")]
 
+    # ── Day summary banner ────────────────────────────────────────────────────
+    n_gaps  = len(gap_today)
+    n_watch = sum(1 for _, tod, _ in gap_today if tod.signal == "WATCH_FILL")
+    n_near  = sum(1 for _, tod, _ in gap_today if tod.signal == "NEAR_FILL")
+
+    if n_gaps == 0:
+        banner_c = "#8b949e"
+        banner_title = "No Gaps Today"
+        banner_msg   = f"All {len(today_rows)} tickers opened near yesterday's close — nothing to watch."
+    elif n_watch > 0:
+        banner_c = "#3fb950"
+        banner_title = f"{n_watch} WATCH_FILL Setup{'s' if n_watch>1 else ''}"
+        fill_tickers = [tkr for tkr, tod, _ in gap_today if tod.signal == "WATCH_FILL"]
+        banner_msg = f"High probability fill expected: <strong>{', '.join(fill_tickers)}</strong>. Watch the fill level for entry."
+    elif n_near > 0:
+        banner_c = "#d29922"
+        banner_title = f"{n_near} NEAR_FILL Setup{'s' if n_near>1 else ''}"
+        fill_tickers = [tkr for tkr, tod, _ in gap_today if tod.signal == "NEAR_FILL"]
+        banner_msg = f"Moderate fill probability: <strong>{', '.join(fill_tickers)}</strong>. Worth monitoring."
+    else:
+        banner_c = "#58a6ff"
+        banner_title = f"{n_gaps} Gap{'s' if n_gaps>1 else ''} — Monitor"
+        banner_msg = "Gaps detected but fill probability below threshold."
+
+    st.markdown(
+        f"""<div style="background:rgba(22,27,34,0.9);border-left:4px solid {banner_c};
+                        border-radius:0 10px 10px 0;padding:16px 20px;margin-bottom:20px;">
+          <div style="font-size:16px;font-weight:800;color:{banner_c};margin-bottom:4px;">
+            {banner_title}</div>
+          <div style="font-size:13px;color:#c9d1d9;">{banner_msg}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Today's gap cards ─────────────────────────────────────────────────────
     if gap_today:
+        section("Active Gap Setups", f"{datetime.now().strftime('%A %b %d')} — gaps with fill targets")
         n_cols = min(len(gap_today), 3)
         cols = st.columns(n_cols)
         for i, (tkr, tod, _) in enumerate(gap_today):
-            sig_c  = gap_signal_color(tod.signal)
-            dir_lbl = gap_dir_label(tod.gap_dir, tod.gap_pct)
+            sig_c   = gap_signal_color(tod.signal)
+            is_up   = tod.gap_dir == "up"
+            dir_c   = "#3fb950" if is_up else "#f85149"
+            dir_str = f"↑ GAP UP {tod.gap_pct*100:+.2f}%" if is_up else f"↓ GAP DOWN {tod.gap_pct*100:+.2f}%"
             fill_r  = f"{tod.hist_fill_rate*100:.0f}%" if tod.hist_fill_rate is not None else "—"
             rev_r   = f"{tod.hist_rev_rate*100:.0f}%" if tod.hist_rev_rate is not None else "—"
             med_rev = f"{tod.hist_med_rev_pts:+.2f} pts" if tod.hist_med_rev_pts is not None else "—"
-            fill_lvl = f"{tod.fill_level:.2f}"
+            progress = fill_progress_bar(tod.open_price, tod.fill_level, None)
+
             with cols[i % n_cols]:
                 st.markdown(
                     f"""
                     <div style="background:#161b22;border:2px solid {sig_c};
-                                border-radius:12px;padding:18px 16px;margin-bottom:12px;">
+                                border-radius:14px;padding:18px 16px;margin-bottom:12px;">
                       <div style="display:flex;justify-content:space-between;
-                                  align-items:baseline;margin-bottom:8px;">
+                                  align-items:baseline;margin-bottom:6px;">
                         <span style="font-size:22px;font-weight:900;color:#fff;">{tkr}</span>
-                        <span style="background:{sig_c};color:#0c1117;font-size:10px;
-                                     font-weight:800;padding:3px 8px;border-radius:4px;
+                        <span style="background:{sig_c}22;color:{sig_c};font-size:9px;
+                                     font-weight:900;padding:3px 8px;border-radius:4px;
                                      letter-spacing:.05em;">{tod.signal}</span>
                       </div>
-                      <div style="font-size:16px;font-weight:700;
-                                  color:{'#3fb950' if tod.gap_dir=='up' else '#f85149'};
-                                  margin-bottom:10px;">{dir_lbl}</div>
-                      <div style="display:grid;grid-template-columns:1fr 1fr;
-                                  gap:8px;font-size:12px;">
-                        <div>
-                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Fill Target</div>
-                          <div style="color:#fff;font-weight:700;">${fill_lvl}</div>
+                      <div style="font-size:15px;font-weight:800;color:{dir_c};
+                                  margin-bottom:8px;">{dir_str} · {tod.gap_pts:+.2f} pts</div>
+                      {progress}
+                      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
+                                  gap:8px;font-size:11px;margin-top:12px;">
+                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
+                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Fill Rate</div>
+                          <div style="color:#ffd633;font-size:16px;font-weight:800;">{fill_r}</div>
                         </div>
-                        <div>
-                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Gap Pts</div>
-                          <div style="color:{'#3fb950' if tod.gap_dir=='up' else '#f85149'};font-weight:700;">
-                            {tod.gap_pts:+.2f}</div>
+                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
+                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Rev After</div>
+                          <div style="color:#ffd633;font-size:16px;font-weight:800;">{rev_r}</div>
                         </div>
-                        <div>
-                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Hist Fill Rate</div>
-                          <div style="color:#ffd633;font-weight:700;">{fill_r}</div>
-                        </div>
-                        <div>
-                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Rev After Fill</div>
-                          <div style="color:#ffd633;font-weight:700;">{rev_r}</div>
-                        </div>
-                        <div style="grid-column:1/-1;">
-                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Median Reversal</div>
-                          <div style="color:#58a6ff;font-weight:700;">{med_rev}</div>
+                        <div style="background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
+                          <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Med Rev</div>
+                          <div style="color:#58a6ff;font-size:16px;font-weight:800;">{med_rev}</div>
                         </div>
                       </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-    else:
-        st.info("No significant gaps detected today across the selected tickers.")
 
     if no_gap:
-        st.caption(f"No gap: {', '.join(t for t, _, _ in no_gap)}")
+        st.caption(f"No gap today: {', '.join(t for t, _, _ in no_gap)}")
 
-    # ── Deep-dive for selected ticker ─────────────────────────────────────────
+    # ── Deep-dive ─────────────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader(f"Deep Dive — {detail_ticker}")
+    section(f"Deep Dive — {detail_ticker}", "Historical stats, recent gap log, and backtest")
 
     try:
         df_feat, stats_bucket, stats_dir, stats_wd, tod_detail = load_gap_analysis(
@@ -546,204 +741,114 @@ elif page == "Gap Reversal":
         st.error(f"Could not load {detail_ticker}: {exc}")
         st.stop()
 
-    # Today's detail card
     sig_c = gap_signal_color(tod_detail.signal)
+    gap_all = df_feat[df_feat["gap_dir"].isin(["up","down"])].copy()
+    ftr_days = df_feat[df_feat["fill_then_reversal"]].copy()
+
+    # KPI strip
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Today's Gap", f"{tod_detail.gap_pct*100:+.2f}%" if tod_detail.gap_dir in ("up","down") else "None")
+    k2.metric("Fill Target", fmt_dollar(tod_detail.fill_level))
+    k3.metric("Hist Fill Rate", fmt_pct(tod_detail.hist_fill_rate) if tod_detail.hist_fill_rate else "—")
+    k4.metric("Rev After Fill", fmt_pct(tod_detail.hist_rev_rate) if tod_detail.hist_rev_rate else "—")
+    k5.metric("Median Rev", f"{tod_detail.hist_med_rev_pts:+.2f} pts" if tod_detail.hist_med_rev_pts else "—")
+
+    # Today's signal detail
     st.markdown(
-        f"""
-        <div style="background:linear-gradient(135deg,#0d1117,#1a2133);
-                    border:2px solid {sig_c};border-radius:14px;
-                    padding:22px 26px;margin-bottom:20px;">
-          <div style="color:#8b949e;font-size:11px;letter-spacing:.12em;
-                      text-transform:uppercase;font-weight:700;margin-bottom:6px;">
-            {tod_detail.today_date} — {detail_ticker} Gap Signal
-          </div>
-          <div style="font-size:13px;color:#e6edf3;line-height:1.6;">
-            {tod_detail.signal_detail}
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);
-                      gap:16px;margin-top:18px;
-                      padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);">
-            <div>
-              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Open</div>
-              <div style="color:#fff;font-size:18px;font-weight:700;">
-                ${tod_detail.open_price:.2f}</div>
-            </div>
-            <div>
-              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Fill Level</div>
-              <div style="color:#ffd633;font-size:18px;font-weight:700;">
-                ${tod_detail.fill_level:.2f}</div>
-            </div>
-            <div>
-              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Gap Size</div>
-              <div style="color:{'#3fb950' if tod_detail.gap_dir=='up' else '#f85149' if tod_detail.gap_dir=='down' else '#8b949e'};
-                          font-size:18px;font-weight:700;">
-                {tod_detail.gap_pct*100:+.2f}%</div>
-            </div>
-            <div>
-              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Similar Gaps (hist)</div>
-              <div style="color:#fff;font-size:18px;font-weight:700;">
-                {tod_detail.hist_n_similar}</div>
-            </div>
-          </div>
-        </div>
-        """,
+        f"""<div style="background:rgba(22,27,34,0.9);border:1px solid {sig_c};
+                        border-radius:10px;padding:14px 18px;margin:12px 0 4px;">
+          <span style="background:{sig_c};color:#0c1117;font-size:9px;font-weight:900;
+                       padding:2px 7px;border-radius:3px;margin-right:8px;">{tod_detail.signal}</span>
+          <span style="color:#c9d1d9;font-size:13px;">{tod_detail.signal_detail}</span>
+        </div>""",
         unsafe_allow_html=True,
     )
 
-    # ── Stats by direction ────────────────────────────────────────────────────
-    st.subheader("Fill & Reversal Rates by Direction")
-    if not stats_dir.empty:
-        fmt_dir = stats_dir.copy()
-        for c in ["Fill Rate", "Reversal Rate", "Fill+Rev Rate", "Avg Gap Size", "Avg Rev %"]:
-            if c in fmt_dir.columns:
-                fmt_dir[c] = fmt_dir[c].apply(
-                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
-                )
-        for c in ["Avg Rev Pts", "Med Rev Pts"]:
-            if c in fmt_dir.columns:
-                fmt_dir[c] = fmt_dir[c].apply(
-                    lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
-                )
-        st.dataframe(fmt_dir, use_container_width=True, hide_index=True)
-    else:
-        st.info("Not enough gap history.")
-
-    # ── Stats by bucket ───────────────────────────────────────────────────────
-    st.subheader("Fill & Reversal Rates by Gap Size")
-    if not stats_bucket.empty:
-        sb_display = stats_bucket.copy().reset_index()
-        sb_display.columns = [
-            "Gap Size", "Sessions", "Fill Rate", "Rev Rate (if filled)",
-            "Fill+Rev Rate", "Avg Rev Pts", "Avg Rev %", "Med Rev Pts", "Avg Gap Size"
-        ]
-        for c in ["Fill Rate", "Rev Rate (if filled)", "Fill+Rev Rate", "Avg Rev %", "Avg Gap Size"]:
-            if c in sb_display.columns:
-                sb_display[c] = sb_display[c].apply(
-                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
-                )
-        for c in ["Avg Rev Pts", "Med Rev Pts"]:
-            if c in sb_display.columns:
-                sb_display[c] = sb_display[c].apply(
-                    lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
-                )
-        if "Sessions" in sb_display.columns:
-            sb_display["Sessions"] = sb_display["Sessions"].apply(
-                lambda v: int(v) if pd.notna(v) else "—"
-            )
-        st.dataframe(sb_display, use_container_width=True, hide_index=True)
-
-        # Fill rate bar chart
-        fill_chart = stats_bucket[["fill_rate", "fill_then_rev"]].copy().dropna()
-        if not fill_chart.empty:
-            fill_chart.columns = ["Fill Rate", "Fill+Reversal Rate"]
-            fill_chart = fill_chart * 100
-            st.subheader("Fill Rate vs Fill+Reversal Rate by Gap Size")
-            st.bar_chart(fill_chart, use_container_width=True)
-
-    # ── Stats by weekday ──────────────────────────────────────────────────────
-    st.subheader("Gap Fill Rates by Weekday")
-    if not stats_wd.empty:
-        wd_display = stats_wd.copy()
-        for c in ["Fill Rate", "Fill+Rev Rate"]:
-            if c in wd_display.columns:
-                wd_display[c] = wd_display[c].apply(
-                    lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—"
-                )
-        if "Avg Rev Pts" in wd_display.columns:
-            wd_display["Avg Rev Pts"] = wd_display["Avg Rev Pts"].apply(
-                lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
-            )
-        st.dataframe(wd_display, use_container_width=True, hide_index=True)
-
-    # ── Historical gap sessions log ───────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Recent Gap Sessions")
-    from src.gap_analysis import recent_gap_trades
-    recent = recent_gap_trades(df_feat, n=40)
-    if not recent.empty:
-        # Colour "Filled" and "Reversed" columns
-        for c in ["Gap %", "Gap Pts"]:
-            if c in recent.columns:
-                recent[c] = recent[c].apply(
-                    lambda v: f"{v*100:+.2f}%" if c == "Gap %" and pd.notna(v)
-                    else (f"{v:+.2f}" if pd.notna(v) else "—")
-                )
-        if "Rev Pts" in recent.columns:
-            recent["Rev Pts"] = recent["Rev Pts"].apply(
-                lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
-            )
-        if "Fill Level" in recent.columns:
-            recent["Fill Level"] = recent["Fill Level"].apply(
-                lambda v: f"${v:.2f}" if pd.notna(v) else "—"
-            )
-        if "Close" in recent.columns:
-            recent["Close"] = recent["Close"].apply(
-                lambda v: f"${v:.2f}" if pd.notna(v) else "—"
-            )
-        st.dataframe(recent, use_container_width=True, hide_index=True)
-
-    # ── Reversal magnitude distribution ──────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Reversal Magnitude Distribution (Fill+Reversal Days)")
-    ftr_days = df_feat[df_feat["fill_then_reversal"]].copy()
-    if len(ftr_days) > 5:
-        rev_pts = ftr_days["reversal_pts"].dropna()
-        st.markdown(
-            f"**{len(rev_pts)}** fill+reversal sessions · "
-            f"Median: **{rev_pts.median():+.2f} pts** · "
-            f"Mean: **{rev_pts.mean():+.2f} pts** · "
-            f"P75: **{rev_pts.quantile(0.75):+.2f} pts** · "
-            f"P90: **{rev_pts.quantile(0.90):+.2f} pts**"
-        )
-        # Histogram via Streamlit (bin the data manually)
-        hist_vals, hist_edges = pd.cut(
-            rev_pts, bins=20, retbins=True
-        ).value_counts(sort=False).align(
-            pd.Series(index=pd.cut(rev_pts, bins=20).cat.categories)
-        )
-        hist_df = pd.DataFrame({
-            "Reversal Pts": [f"{e.mid:+.1f}" for e in hist_vals.index],
-            "Count":         hist_vals.fillna(0).astype(int).values,
-        }).set_index("Reversal Pts")
-        st.bar_chart(hist_df, use_container_width=True)
-    else:
-        st.info("Not enough fill+reversal history to show distribution.")
-
-    # ── Gap fill equity curve (backtest) ─────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Cumulative P&L — Gap Fill+Reversal Strategy (1 unit per trade)")
-    st.caption(
-        "Simplified backtest: buy/sell 1 unit at the open on gap days, "
-        "exit at close. Long on gap-down fill+reversal setups, short on gap-up fill+reversal."
-    )
-    gap_all = df_feat[df_feat["gap_dir"].isin(["up", "down"])].copy()
+    # Backtest equity curve
     if len(gap_all) > 5:
-        # For gap-down: expected bullish reversal → long (reversal_pts > 0 = profit)
-        # For gap-up: expected bearish reversal → short (reversal_pts < 0 = profit for short)
+        st.markdown("**Gap Fill+Reversal Strategy Equity Curve**")
         gap_all["strategy_pnl"] = 0.0
-        gap_down_fill = (gap_all["gap_dir"] == "down") & gap_all["fill_then_reversal"]
-        gap_up_fill   = (gap_all["gap_dir"] == "up")   & gap_all["fill_then_reversal"]
-        # On fill+reversal days: realised P&L = |reversal_pts|
-        gap_all.loc[gap_down_fill, "strategy_pnl"] = gap_all.loc[gap_down_fill, "reversal_pts"].abs()
-        gap_all.loc[gap_up_fill,   "strategy_pnl"] = gap_all.loc[gap_up_fill,   "reversal_pts"].abs()
-        # On gap days that did NOT fill+reverse: loss = session_return_pct * open (simplified: gap_pts/2)
+        gap_all.loc[(gap_all["gap_dir"]=="down") & gap_all["fill_then_reversal"], "strategy_pnl"] = \
+            ftr_days.loc[ftr_days["gap_dir"]=="down", "reversal_pts"].abs() if len(ftr_days) else 0
+        gap_all.loc[(gap_all["gap_dir"]=="up")   & gap_all["fill_then_reversal"], "strategy_pnl"] = \
+            ftr_days.loc[ftr_days["gap_dir"]=="up", "reversal_pts"].abs()   if len(ftr_days) else 0
         gap_no_ftr = gap_all["gap_dir"].isin(["up","down"]) & ~gap_all["fill_then_reversal"]
-        gap_all.loc[gap_no_ftr, "strategy_pnl"] = -(gap_all.loc[gap_no_ftr, "abs_gap_pct"] * gap_all.loc[gap_no_ftr, "Open"] * 0.5)
-
+        gap_all.loc[gap_no_ftr, "strategy_pnl"] = -(
+            gap_all.loc[gap_no_ftr, "abs_gap_pct"] * gap_all.loc[gap_no_ftr, "Open"] * 0.5
+        )
         cum_pnl = gap_all["strategy_pnl"].cumsum().rename("Cumulative P&L (pts)")
-        st.line_chart(cum_pnl, use_container_width=True)
+        st.line_chart(cum_pnl, use_container_width=True, height=180)
 
-        win_rate = gap_all["fill_then_reversal"].mean()
-        avg_win  = gap_all.loc[gap_all["fill_then_reversal"], "strategy_pnl"].mean()
-        avg_loss = gap_all.loc[~gap_all["fill_then_reversal"], "strategy_pnl"].mean()
+        win_rate  = gap_all["fill_then_reversal"].mean()
+        avg_win   = gap_all.loc[gap_all["fill_then_reversal"], "strategy_pnl"].mean()
+        avg_loss  = gap_all.loc[~gap_all["fill_then_reversal"], "strategy_pnl"].mean()
         total_pnl = gap_all["strategy_pnl"].sum()
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Win Rate",   f"{win_rate*100:.1f}%")
-        c2.metric("Avg Win",    f"{avg_win:+.2f} pts" if pd.notna(avg_win) else "—")
-        c3.metric("Avg Loss",   f"{avg_loss:+.2f} pts" if pd.notna(avg_loss) else "—")
-        c4.metric("Total P&L",  f"{total_pnl:+.1f} pts")
-    else:
-        st.info("Not enough gap history for backtest.")
+        c1.metric("Win Rate",  fmt_pct(win_rate))
+        c2.metric("Avg Win",   f"{avg_win:+.2f} pts" if pd.notna(avg_win) else "—")
+        c3.metric("Avg Loss",  f"{avg_loss:+.2f} pts" if pd.notna(avg_loss) else "—")
+        c4.metric("Total P&L", f"{total_pnl:+.1f} pts")
+
+    # Stats tables in expander
+    with st.expander("Historical Stats Tables"):
+        if not stats_dir.empty:
+            st.markdown("**By Direction**")
+            fmt_dir = stats_dir.copy()
+            for c in ["Fill Rate", "Reversal Rate", "Fill+Rev Rate", "Avg Gap Size", "Avg Rev %"]:
+                if c in fmt_dir.columns:
+                    fmt_dir[c] = fmt_dir[c].apply(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—")
+            for c in ["Avg Rev Pts", "Med Rev Pts"]:
+                if c in fmt_dir.columns:
+                    fmt_dir[c] = fmt_dir[c].apply(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+            st.dataframe(fmt_dir, use_container_width=True, hide_index=True)
+
+        if not stats_bucket.empty:
+            st.markdown("**By Gap Size Bucket**")
+            sb_d = stats_bucket.copy().reset_index()
+            sb_d.columns = ["Gap Size","Sessions","Fill Rate","Rev Rate","Fill+Rev","Avg Rev Pts","Avg Rev %","Med Rev Pts","Avg Gap"]
+            for c in ["Fill Rate","Rev Rate","Fill+Rev","Avg Rev %","Avg Gap"]:
+                if c in sb_d.columns:
+                    sb_d[c] = sb_d[c].apply(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—")
+            for c in ["Avg Rev Pts","Med Rev Pts"]:
+                if c in sb_d.columns:
+                    sb_d[c] = sb_d[c].apply(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+            if "Sessions" in sb_d.columns:
+                sb_d["Sessions"] = sb_d["Sessions"].apply(lambda v: int(v) if pd.notna(v) else 0)
+            st.dataframe(sb_d, use_container_width=True, hide_index=True)
+
+        if not stats_wd.empty:
+            st.markdown("**By Weekday**")
+            wd_d = stats_wd.copy()
+            for c in ["Fill Rate","Fill+Rev Rate"]:
+                if c in wd_d.columns:
+                    wd_d[c] = wd_d[c].apply(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "—")
+            if "Avg Rev Pts" in wd_d.columns:
+                wd_d["Avg Rev Pts"] = wd_d["Avg Rev Pts"].apply(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+            st.dataframe(wd_d, use_container_width=True, hide_index=True)
+
+    # Fill rate chart
+    if not stats_bucket.empty:
+        fill_chart = stats_bucket[["fill_rate", "fill_then_rev"]].copy().dropna()
+        if not fill_chart.empty:
+            st.markdown("**Fill Rate & Fill+Reversal Rate by Gap Size**")
+            fill_chart.columns = ["Fill Rate %", "Fill+Reversal %"]
+            st.bar_chart(fill_chart * 100, use_container_width=True, height=180)
+
+    # Recent gap log
+    from src.gap_analysis import recent_gap_trades
+    recent = recent_gap_trades(df_feat, n=30)
+    if not recent.empty:
+        with st.expander("Recent Gap Sessions (last 30)"):
+            for c in ["Gap %"]:
+                if c in recent.columns:
+                    recent[c] = recent[c].apply(lambda v: f"{v*100:+.2f}%" if pd.notna(v) else "—")
+            for c in ["Gap Pts", "Rev Pts"]:
+                if c in recent.columns:
+                    recent[c] = recent[c].apply(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+            for c in ["Fill Level", "Close"]:
+                if c in recent.columns:
+                    recent[c] = recent[c].apply(lambda v: f"${v:.2f}" if pd.notna(v) else "—")
+            st.dataframe(recent, use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -751,9 +856,6 @@ elif page == "Gap Reversal":
 # ══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Account Tracker":
-    st.title("Account Tracker")
-    st.caption("Track your equity, milestones, and trade log")
-
     try:
         state = load_account()
     except Exception as e:
@@ -765,56 +867,59 @@ elif page == "Account Tracker":
     pnl_color = "#3fb950" if pnl >= 0 else "#f85149"
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
+    section("Account Overview")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Starting Equity", fmt_dollar(state.starting_equity))
-    k2.metric("Current Equity", fmt_dollar(state.current_equity),
+    k2.metric("Current Equity",  fmt_dollar(state.current_equity),
               delta=f"{'+' if pnl >= 0 else ''}{fmt_dollar(pnl)}")
-    k3.metric("Total P&L %", f"{pnl_pct*100:+.1f}%")
-    k4.metric("Trades", state.trade_count())
+    k3.metric("Total Return",    f"{pnl_pct*100:+.1f}%")
+    k4.metric("Trades Logged",   state.trade_count())
     k5.metric("Win Rate",
               fmt_pct(state.win_count() / state.trade_count())
               if state.trade_count() > 0 else "—")
 
-    # ── Milestones ───────────────────────────────────────────────────────────
+    # ── Milestones ────────────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Milestones")
+    section("Milestone Tracker", "Journey from starting equity to each goal")
     for ms in state.milestones:
-        pct = min(state.current_equity / ms, 1.0) if ms > 0 else 0
+        pct = min(state.current_equity / ms, 1.0) if ms > 0 else 0.0
+        bar_c = "#3fb950" if pct >= 1.0 else "#ffd633" if pct >= 0.5 else "#58a6ff"
+        done_label = "✅ REACHED" if pct >= 1.0 else f"{pct*100:.1f}% there"
         st.markdown(
             f"""
-            <div style="margin-bottom:14px;">
+            <div style="background:#161b22;border-radius:10px;
+                        padding:14px 18px;margin-bottom:10px;">
               <div style="display:flex;justify-content:space-between;
-                          font-size:13px;margin-bottom:4px;">
-                <span style="color:#8b949e;">
-                  {fmt_dollar(state.starting_equity)} → {fmt_dollar(ms)}
-                </span>
-                <span style="color:#ffd633;font-weight:700;">
-                  {pct*100:.1f}% there
-                </span>
+                          font-size:13px;margin-bottom:8px;">
+                <span style="color:#e6edf3;font-weight:700;">
+                  {fmt_dollar(state.starting_equity)}
+                  <span style="color:#8b949e;font-weight:400;"> → </span>
+                  {fmt_dollar(ms)}</span>
+                <span style="color:{bar_c};font-weight:800;">{done_label}</span>
               </div>
-              <div style="height:12px;background:rgba(139,148,158,0.15);
-                          border-radius:6px;overflow:hidden;">
+              <div style="height:8px;background:rgba(139,148,158,0.12);
+                          border-radius:4px;overflow:hidden;">
                 <div style="width:{pct*100:.1f}%;height:100%;
-                            background:linear-gradient(90deg,#3fb950,#ffd633);">
-                </div>
+                            background:linear-gradient(90deg,#3fb950,{bar_c});
+                            border-radius:4px;"></div>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    # ── Add trade form ────────────────────────────────────────────────────────
+    # ── Log trade form ────────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Log a Trade")
+    section("Log a Trade")
     with st.form("log_trade_form", clear_on_submit=True):
-        cols = st.columns([1, 1.5, 1, 1, 1])
-        trade_date  = cols[0].date_input("Date", value=date.today())
-        trade_ticker = cols[1].text_input("Ticker", value="SPY")
-        trade_tier  = cols[2].selectbox("Tier", ["GO_ULTRA_JACKPOT", "GO_JACKPOT", "GO_HOT"])
-        trade_risk  = cols[3].number_input("Risk ($)", value=50.0, min_value=0.0, step=10.0)
-        trade_pnl   = cols[4].number_input("P&L ($)", value=0.0, step=1.0)
-        trade_note  = st.text_input("Note (optional)", value="")
-        submitted   = st.form_submit_button("Log Trade", use_container_width=True)
+        c1, c2, c3, c4, c5 = st.columns([1, 1.5, 1.2, 1, 1])
+        trade_date   = c1.date_input("Date", value=date.today())
+        trade_ticker = c2.text_input("Ticker", value="SPY")
+        trade_tier   = c3.selectbox("Signal tier", ["GO_ULTRA_JACKPOT", "GO_JACKPOT", "GO_HOT"])
+        trade_risk   = c4.number_input("Risk ($)", value=50.0, min_value=0.0, step=10.0)
+        trade_pnl    = c5.number_input("P&L ($)", value=0.0, step=1.0)
+        trade_note   = st.text_input("Note (optional)", value="")
+        submitted    = st.form_submit_button("Log Trade ›", use_container_width=True, type="primary")
 
     if submitted:
         from src.account_state import load_state, log_trade, save_state, snapshot_equity, TradeEntry
@@ -831,65 +936,62 @@ elif page == "Account Tracker":
         s = snapshot_equity(s)
         save_state(s, path=ACCT_PATH)
         st.cache_data.clear()
-        st.success(f"Logged: {trade_ticker} {trade_tier} — P&L {'+' if trade_pnl >= 0 else ''}{fmt_dollar(trade_pnl)}")
+        pnl_sign = "+" if trade_pnl >= 0 else ""
+        st.success(f"Logged: {trade_ticker.upper()} {trade_tier} — P&L {pnl_sign}{fmt_dollar(trade_pnl)}")
         st.rerun()
 
-    # ── Set equity form ───────────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Update Equity")
-    with st.form("set_equity_form", clear_on_submit=True):
-        new_equity = st.number_input("Current equity ($)", value=float(state.current_equity),
-                                     min_value=0.0, step=10.0)
-        set_eq = st.form_submit_button("Update", use_container_width=True)
-    if set_eq:
-        from src.account_state import load_state, save_state, snapshot_equity
-        s = load_state(path=ACCT_PATH)
-        s.current_equity = float(new_equity)
-        s = snapshot_equity(s)
-        save_state(s, path=ACCT_PATH)
-        st.cache_data.clear()
-        st.success(f"Equity updated to {fmt_dollar(new_equity)}")
-        st.rerun()
+    # ── Update equity form ────────────────────────────────────────────────────
+    with st.expander("Update equity balance"):
+        with st.form("set_equity_form", clear_on_submit=True):
+            new_equity = st.number_input("Current equity ($)", value=float(state.current_equity),
+                                         min_value=0.0, step=10.0)
+            if st.form_submit_button("Update", use_container_width=True):
+                from src.account_state import load_state, save_state, snapshot_equity
+                s = load_state(path=ACCT_PATH)
+                s.current_equity = float(new_equity)
+                s = snapshot_equity(s)
+                save_state(s, path=ACCT_PATH)
+                st.cache_data.clear()
+                st.success(f"Equity updated to {fmt_dollar(new_equity)}")
+                st.rerun()
+
+    # ── Equity curve ──────────────────────────────────────────────────────────
+    if state.history and len(state.history) > 1:
+        st.markdown("---")
+        section("Equity Curve")
+        hist_df = pd.DataFrame(state.history)
+        hist_df["date"] = pd.to_datetime(hist_df["date"])
+        hist_df = hist_df.set_index("date").sort_index()
+        st.line_chart(hist_df["equity"], use_container_width=True, height=200)
 
     # ── Trade log ─────────────────────────────────────────────────────────────
     if state.trades:
         st.markdown("---")
-        st.subheader("Trade Log")
+        section("Trade Log", f"{len(state.trades)} trade{'s' if len(state.trades)>1 else ''} recorded")
         trades_data = []
         for t in reversed(state.trades):
             trades_data.append({
                 "Date":   t.date,
                 "Ticker": t.ticker,
-                "Tier":   t.tier,
+                "Tier":   t.tier.replace("GO_", ""),
                 "Risk":   fmt_dollar(t.risk),
                 "P&L":    fmt_dollar(t.pnl),
-                "Note":   t.note,
+                "Note":   t.note or "",
             })
         st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
 
-    # ── Equity history ────────────────────────────────────────────────────────
-    if state.history and len(state.history) > 1:
-        st.markdown("---")
-        st.subheader("Equity Curve")
-        hist_df = pd.DataFrame(state.history)
-        hist_df["date"] = pd.to_datetime(hist_df["date"])
-        hist_df = hist_df.set_index("date").sort_index()
-        st.line_chart(hist_df["equity"], use_container_width=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PAGE 4: WEEKDAY PATTERNS
+#  PAGE 5: WEEKDAY PATTERNS
 # ══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Weekday Patterns":
-    st.title("Weekday Volatility Patterns")
-    st.caption("Which day of the week is most volatile? Most flat?")
-
     with st.sidebar:
-        st.markdown("### Settings")
+        st.markdown("---")
+        st.markdown("**Settings**")
         ticker_wd = st.selectbox("Ticker", ["SPY", "QQQ", "IWM", "AAPL"], index=0)
         lookback  = st.selectbox("Lookback", [504, 252, 756], index=0,
-                                 format_func=lambda v: {504: "2 years", 252: "1 year", 756: "3 years"}[v])
+                                 format_func=lambda v: {504:"2 years",252:"1 year",756:"3 years"}[v])
 
     with st.spinner(f"Loading {ticker_wd} history…"):
         try:
@@ -902,106 +1004,89 @@ elif page == "Weekday Patterns":
         st.warning("No data available.")
         st.stop()
 
-    # ── Build weekday aggregates ───────────────────────────────────────────────
-    wd_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
+    wd_map = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday", 4: "Friday"}
     daily["Weekday"] = daily.index.dayofweek.map(wd_map)
 
-    vol_col = "YangZhang" if "YangZhang" in daily.columns else (
-              "ATR" if "ATR" in daily.columns else None)
-    rng_col = "RangePct" if "RangePct" in daily.columns else None
-    body_col = "BodyPct" if "BodyPct" in daily.columns else None
+    vol_col  = "YangZhang" if "YangZhang" in daily.columns else ("ATR" if "ATR" in daily.columns else None)
+    rng_col  = "RangePct" if "RangePct" in daily.columns else None
+    body_col = "BodyPct"  if "BodyPct"  in daily.columns else None
 
     if vol_col is None and rng_col is None:
-        # Compute basic range
         daily["RangePct"] = (daily["High"] - daily["Low"]) / daily["Open"]
         rng_col = "RangePct"
 
     agg_dict: dict = {"Close": "count"}
-    if rng_col:   agg_dict[rng_col]   = "mean"
-    if body_col:  agg_dict[body_col]  = "mean"
-    if vol_col:   agg_dict[vol_col]   = "mean"
+    if vol_col:  agg_dict[vol_col]  = "mean"
+    if rng_col:  agg_dict[rng_col]  = "mean"
+    if body_col: agg_dict[body_col] = "mean"
 
-    wd_agg = (
-        daily.groupby("Weekday")
-             .agg(agg_dict)
-             .rename(columns={"Close": "Sessions"})
-             .reindex(["Mon", "Tue", "Wed", "Thu", "Fri"])
-    )
+    wd_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    wd_agg = daily.groupby("Weekday").agg(agg_dict).reindex(wd_order).dropna(how="all")
+    wd_agg.rename(columns={"Close": "Sessions"}, inplace=True)
 
-    # ── Answer cards ──────────────────────────────────────────────────────────
+    # Best / worst day
+    metric_col = vol_col or rng_col
+    if metric_col and metric_col in wd_agg.columns:
+        best_day  = wd_agg[metric_col].idxmax()
+        worst_day = wd_agg[metric_col].idxmin()
+    else:
+        best_day = worst_day = "—"
+
+    # ── Day summary banners ───────────────────────────────────────────────────
+    section(f"Weekday Volatility — {ticker_wd}",
+            f"{lookback//252}-year lookback · {len(daily)} sessions")
+
+    col_best, col_worst = st.columns(2)
+    with col_best:
+        st.markdown(
+            f"""<div style="background:#0d1f14;border:2px solid #3fb950;
+                            border-radius:12px;padding:20px;text-align:center;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.1em;margin-bottom:6px;">Most Volatile Day</div>
+              <div style="font-size:30px;font-weight:900;color:#3fb950;">{best_day}</div>
+              <div style="color:#8b949e;font-size:11px;margin-top:4px;">
+                {'Avg range: ' + fmt_pct(wd_agg.loc[best_day, rng_col]) if rng_col and best_day in wd_agg.index else ""}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    with col_worst:
+        st.markdown(
+            f"""<div style="background:#1a1208;border:2px solid #8b949e;
+                            border-radius:12px;padding:20px;text-align:center;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.1em;margin-bottom:6px;">Calmest Day</div>
+              <div style="font-size:30px;font-weight:900;color:#8b949e;">{worst_day}</div>
+              <div style="color:#8b949e;font-size:11px;margin-top:4px;">
+                {'Avg range: ' + fmt_pct(wd_agg.loc[worst_day, rng_col]) if rng_col and worst_day in wd_agg.index else ""}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+    # ── Charts ────────────────────────────────────────────────────────────────
     if rng_col and rng_col in wd_agg.columns:
-        most_vol_day = wd_agg[rng_col].idxmax()
-        most_flat_day = wd_agg[rng_col].idxmin()
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(
-                f"""
-                <div style="background:linear-gradient(135deg,#1a0c0c,#3d1010);
-                            border:2px solid #f85149;border-radius:14px;padding:22px 24px;">
-                  <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
-                              letter-spacing:.1em;font-weight:700;">Most Volatile Day</div>
-                  <div style="font-size:44px;font-weight:900;color:#f85149;margin:6px 0;">
-                    {most_vol_day}
-                  </div>
-                  <div style="color:#8b949e;font-size:13px;">
-                    Avg range: <strong style="color:#fff;">
-                    {wd_agg.loc[most_vol_day, rng_col]*100:.2f}%</strong>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        with c2:
-            st.markdown(
-                f"""
-                <div style="background:linear-gradient(135deg,#0c1220,#10204d);
-                            border:2px solid #58a6ff;border-radius:14px;padding:22px 24px;">
-                  <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
-                              letter-spacing:.1em;font-weight:700;">Flattest Day</div>
-                  <div style="font-size:44px;font-weight:900;color:#58a6ff;margin:6px 0;">
-                    {most_flat_day}
-                  </div>
-                  <div style="color:#8b949e;font-size:13px;">
-                    Avg range: <strong style="color:#fff;">
-                    {wd_agg.loc[most_flat_day, rng_col]*100:.2f}%</strong>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("---")
-
-    # ── Bar charts ────────────────────────────────────────────────────────────
-    if rng_col and rng_col in wd_agg.columns:
-        st.subheader("Average Intraday Range by Weekday")
-        chart_data = wd_agg[[rng_col]].copy()
-        chart_data.columns = ["Avg Range %"]
-        chart_data["Avg Range %"] = chart_data["Avg Range %"] * 100
-        st.bar_chart(chart_data, use_container_width=True)
-
-    if vol_col and vol_col in wd_agg.columns:
-        st.subheader("Average Yang-Zhang Volatility by Weekday")
-        yz_data = wd_agg[[vol_col]].copy()
-        yz_data.columns = ["Avg YZ Vol"]
-        st.bar_chart(yz_data, use_container_width=True)
-
-    # ── Summary table ─────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Weekday Summary")
-    show_cols = [c for c in [rng_col, body_col, vol_col, "Sessions"] if c and c in wd_agg.columns]
-    tbl = wd_agg[show_cols].copy()
-    for c in show_cols:
-        if c != "Sessions":
-            tbl[c] = tbl[c].apply(lambda v: f"{v*100:.3f}%" if pd.notna(v) else "—")
-    st.dataframe(tbl, use_container_width=True)
-
-    # ── Individual session scatter (using native Streamlit) ──────────────────
-    if rng_col:
         st.markdown("---")
-        st.subheader("All Sessions — Range Distribution")
-        scatter_data = daily[["Weekday", rng_col]].copy()
-        scatter_data[rng_col] = scatter_data[rng_col] * 100
-        scatter_data.columns = ["Weekday", "Range %"]
-        st.scatter_chart(scatter_data, x="Weekday", y="Range %", use_container_width=True)
+        section("Average Intraday Range % by Weekday")
+        chart_df = (wd_agg[[rng_col]] * 100).rename(columns={rng_col: "Avg Range %"})
+        st.bar_chart(chart_df, use_container_width=True, height=200)
+
+    if vol_col and vol_col in wd_agg.columns and vol_col != rng_col:
+        st.markdown("---")
+        section(f"Average {vol_col} by Weekday")
+        st.bar_chart(wd_agg[[vol_col]].rename(columns={vol_col: vol_col}),
+                     use_container_width=True, height=180)
+
+    # ── Data table ────────────────────────────────────────────────────────────
+    st.markdown("---")
+    section("Weekday Statistics Table")
+    display_wd = wd_agg.copy()
+    display_wd["Sessions"] = display_wd["Sessions"].apply(lambda v: int(v) if pd.notna(v) else 0)
+    for c in [rng_col, body_col]:
+        if c and c in display_wd.columns:
+            display_wd[c] = display_wd[c].apply(
+                lambda v: f"{v*100:.2f}%" if pd.notna(v) else "—"
+            )
+    if vol_col and vol_col in display_wd.columns:
+        display_wd[vol_col] = display_wd[vol_col].apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+    st.dataframe(display_wd.reset_index(), use_container_width=True, hide_index=True)
