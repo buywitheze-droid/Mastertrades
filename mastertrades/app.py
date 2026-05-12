@@ -170,6 +170,21 @@ def load_gap_analysis(ticker: str, lookback_years: int = 5):
     return df_feat, stats_bucket, stats_dir, stats_wd, today
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def load_live_quotes(tickers: tuple) -> dict:
+    """Fetch live Polygon snapshots for a tuple of tickers.
+    Returns {TICKER: snap_dict}. TTL=30 s so quotes auto-refresh.
+    Falls back to empty dict if Polygon unavailable.
+    """
+    try:
+        from src.polygon_feed import fetch_multi_snapshot, has_polygon_key
+        if not has_polygon_key():
+            return {}
+        return fetch_multi_snapshot(list(tickers))
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_account():
     from src.account_state import load_state
@@ -213,15 +228,15 @@ with st.sidebar:
 
     if _poly_ok:
         st.markdown(
-            """<div style="background:#0d1f14;border:1px solid #3fb950;
+            f"""<div style="background:#0d1f14;border:1px solid #3fb950;
                            border-radius:8px;padding:10px 12px;margin-bottom:10px;">
                  <div style="font-size:10px;font-weight:800;color:#3fb950;
                              text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">
-                   ✅ Polygon.io Connected</div>
-                 <div style="font-size:10px;color:#8b949e;line-height:1.5;">
+                   ✅ Polygon.io Live</div>
+                 <div style="font-size:10px;color:#8b949e;line-height:1.6;">
                    Exchange-quality OHLCV<br>
-                   Adjusted daily bars<br>
-                   <span style="color:#6e7681;">Real-time quotes: upgrade plan</span>
+                   Live quotes &amp; snapshots<br>
+                   <span style="color:#ffd633;">Refreshes every 30 s</span>
                  </div>
                </div>""",
             unsafe_allow_html=True,
@@ -319,60 +334,88 @@ if page == "Command Center":
         unsafe_allow_html=True,
     )
 
+    # ── Live quotes ───────────────────────────────────────────────────────────
+    live_q = load_live_quotes(JACKPOT_TICKERS)
+
     # ── Ticker cards ──────────────────────────────────────────────────────────
     section("Per-Ticker Signals")
     cols = st.columns(len(rows))
     for col, row in zip(cols, rows):
         sig_c = signal_color(row.signal)
-        p_vol_v = fmt_pct(row.p_vol)
-        p_pnl_v = fmt_pct(row.p_pnl)
-        close_v = fmt_dollar(row.last_close)
-        pct_chg = getattr(row, "pct_change", None)
-        rsi_v   = getattr(row, "rsi14", None)
-        chg_c   = "#3fb950" if (pct_chg or 0) >= 0 else "#f85149"
-        chg_str = f"{pct_chg*100:+.2f}%" if pct_chg is not None and not math.isnan(pct_chg) else "—"
-        rsi_str = f"{rsi_v:.0f}" if rsi_v is not None and not math.isnan(rsi_v) else "—"
+        snap  = live_q.get(row.ticker, {})
 
-        is_trade = row.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")
-        glow = f"box-shadow:0 0 18px {sig_c}44;" if is_trade else ""
+        # Price: prefer Polygon live, fall back to ML model's last close
+        price     = snap.get("last_price") or row.last_close
+        chg_pct   = snap.get("change_pct") or getattr(row, "pct_change", None)
+        chg_pts   = snap.get("change_pts", 0.0)
+        day_high  = snap.get("day_high") or 0.0
+        day_low   = snap.get("day_low")  or 0.0
+        day_vwap  = snap.get("day_vwap") or 0.0
+        s_label   = snap.get("status_label", "")
+        rsi_v     = getattr(row, "rsi14", None)
+
+        price_str = fmt_dollar(price)
+        chg_c     = "#3fb950" if (chg_pct or 0) >= 0 else "#f85149"
+        chg_str   = f"{chg_pct*100:+.2f}%" if chg_pct is not None and not math.isnan(float(chg_pct)) else "—"
+        chg_pts_s = f"{chg_pts:+.2f}" if chg_pts else ""
+        rsi_str   = f"{rsi_v:.0f}" if rsi_v is not None and not math.isnan(float(rsi_v)) else "—"
+        is_trade  = row.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")
+        glow      = f"box-shadow:0 0 20px {sig_c}55;" if is_trade else ""
+        live_badge = (
+            f'<span style="background:#0d1f14;color:#3fb950;font-size:8px;'
+            f'font-weight:900;padding:2px 5px;border-radius:3px;'
+            f'letter-spacing:.05em;margin-left:4px;">{s_label}</span>'
+            if s_label else ""
+        )
+        hl_row = (
+            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;'
+            f'letter-spacing:.07em;">Day H / L</div>'
+            f'<div style="color:#e6edf3;font-weight:700;font-size:11px;">'
+            f'{fmt_dollar(day_high)} / {fmt_dollar(day_low)}</div></div>'
+            if day_high else ""
+        )
+        vwap_row = (
+            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;'
+            f'letter-spacing:.07em;">VWAP</div>'
+            f'<div style="color:#58a6ff;font-weight:700;">{fmt_dollar(day_vwap)}</div></div>'
+            if day_vwap else ""
+        )
 
         with col:
             st.markdown(
                 f"""
                 <div style="background:#161b22;border:2px solid {sig_c};
                             border-radius:14px;padding:20px 16px;{glow}">
-                  <div style="display:flex;justify-content:space-between;align-items:baseline;
-                              margin-bottom:12px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;
+                              margin-bottom:4px;">
                     <span style="font-size:24px;font-weight:900;color:#fff;">{row.ticker}</span>
                     <span style="background:{sig_c};color:#0c1117;font-size:9px;
                                  font-weight:900;padding:3px 8px;border-radius:4px;
                                  letter-spacing:.05em;">{row.signal.replace("GO_","")}</span>
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:14px;">
+                    <span style="font-size:28px;font-weight:900;color:#fff;">{price_str}</span>
+                    {live_badge}
+                  </div>
+                  <div style="font-size:15px;font-weight:700;color:{chg_c};margin-bottom:14px;">
+                    {chg_str}
+                    <span style="font-size:11px;font-weight:500;color:{chg_c};">{chg_pts_s}</span>
                   </div>
                   <div style="display:grid;grid-template-columns:1fr 1fr;row-gap:10px;
                               column-gap:8px;font-size:11px;">
                     <div>
                       <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
                                   letter-spacing:.07em;">P(vol)</div>
-                      <div style="color:{sig_c};font-size:18px;font-weight:800;
-                                  line-height:1.2;">{p_vol_v}</div>
+                      <div style="color:{sig_c};font-size:16px;font-weight:800;">{fmt_pct(row.p_vol)}</div>
                     </div>
                     <div>
                       <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
                                   letter-spacing:.07em;">P(pnl)</div>
-                      <div style="color:{sig_c};font-size:18px;font-weight:800;
-                                  line-height:1.2;">{p_pnl_v}</div>
+                      <div style="color:{sig_c};font-size:16px;font-weight:800;">{fmt_pct(row.p_pnl)}</div>
                     </div>
+                    {hl_row}
+                    {vwap_row}
                     <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
-                                  letter-spacing:.07em;">Close</div>
-                      <div style="color:#e6edf3;font-weight:700;">{close_v}</div>
-                    </div>
-                    <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
-                                  letter-spacing:.07em;">Chg %</div>
-                      <div style="color:{chg_c};font-weight:700;">{chg_str}</div>
-                    </div>
-                    <div style="grid-column:1/-1;">
                       <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
                                   letter-spacing:.07em;">RSI(14)</div>
                       <div style="color:#e6edf3;font-weight:700;">{rsi_str}</div>
@@ -507,22 +550,52 @@ elif page == "Scanner":
     if "p_vol" in df_s.columns:
         df_s = df_s.sort_values("p_vol", ascending=False).reset_index(drop=True)
 
+    # ── Live quotes for scanner universe ─────────────────────────────────────
+    scanner_tickers = tuple(df_s["ticker"].tolist()) if "ticker" in df_s.columns else ()
+    scanner_live = load_live_quotes(scanner_tickers) if scanner_tickers else {}
+
     # ── Top picks (top 3) ─────────────────────────────────────────────────────
     section("Top Picks Today", "Ranked by P(volatile day) — highest conviction first")
 
     top3 = df_s.head(3)
     cols = st.columns(len(top3))
     for i, (_, row) in enumerate(top3.iterrows()):
+        tkr    = row.get("ticker", "?")
         p_vol  = row.get("p_vol",  float("nan"))
         lift   = row.get("lift",   float("nan"))
-        close  = row.get("last_close", float("nan"))
-        chg    = row.get("pct_change", float("nan"))
         rsi    = row.get("rsi14",  float("nan"))
+        snap   = scanner_live.get(tkr, {})
+
+        # Prefer live Polygon price/change, fall back to model data
+        live_price = snap.get("last_price") or row.get("last_close", float("nan"))
+        live_chg   = snap.get("change_pct")
+        if live_chg is None:
+            live_chg = row.get("pct_change", float("nan"))
+        day_high   = snap.get("day_high", 0.0)
+        day_low    = snap.get("day_low",  0.0)
+        day_vwap   = snap.get("day_vwap", 0.0)
+        s_label    = snap.get("status_label", "")
+
         lift_txt, lift_c = lift_label(lift)
-        chg_c  = "#3fb950" if (not math.isnan(chg) and chg >= 0) else "#f85149"
+        chg_c  = "#3fb950" if (live_chg is not None and not math.isnan(float(live_chg)) and float(live_chg) >= 0) else "#f85149"
         pvol_c = "#ffd633" if (not math.isnan(p_vol) and p_vol >= 0.65) else (
                   "#3fb950" if (not math.isnan(p_vol) and p_vol >= 0.55) else "#58a6ff")
         rank_badge = ["#1", "#2", "#3"][i]
+        live_badge = (
+            f'<span style="background:#0d1f14;color:#3fb950;font-size:8px;font-weight:900;'
+            f'padding:2px 5px;border-radius:3px;letter-spacing:.05em;margin-left:6px;">{s_label}</span>'
+            if s_label else ""
+        )
+        hl_html = (
+            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;">H / L</div>'
+            f'<div style="color:#e6edf3;font-weight:700;font-size:11px;">{fmt_dollar(day_high)} / {fmt_dollar(day_low)}</div></div>'
+            if day_high else ""
+        )
+        vwap_html = (
+            f'<div><div style="color:#8b949e;font-size:9px;text-transform:uppercase;">VWAP</div>'
+            f'<div style="color:#58a6ff;font-weight:700;">{fmt_dollar(day_vwap)}</div></div>'
+            if day_vwap else ""
+        )
 
         with cols[i]:
             st.markdown(
@@ -531,42 +604,35 @@ elif page == "Scanner":
                             border-radius:14px;padding:20px 18px;
                             box-shadow:0 0 16px {pvol_c}33;">
                   <div style="display:flex;justify-content:space-between;
-                              align-items:baseline;margin-bottom:14px;">
-                    <span style="font-size:22px;font-weight:900;color:#fff;">{row.get("ticker","?")}</span>
+                              align-items:center;margin-bottom:6px;">
+                    <span style="font-size:22px;font-weight:900;color:#fff;">{tkr}</span>
                     <span style="color:#8b949e;font-size:13px;font-weight:700;">{rank_badge}</span>
                   </div>
-                  <div style="font-size:42px;font-weight:900;color:{pvol_c};
-                              line-height:1;margin-bottom:6px;">
-                    {fmt_pct(p_vol)}</div>
+                  <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:2px;">
+                    <span style="font-size:24px;font-weight:900;color:#fff;">{fmt_dollar(live_price)}</span>
+                    {live_badge}
+                  </div>
+                  <div style="font-size:14px;font-weight:700;color:{chg_c};margin-bottom:12px;">
+                    {f"{float(live_chg)*100:+.2f}%" if live_chg is not None and not math.isnan(float(live_chg)) else "—"}
+                  </div>
+                  <div style="font-size:36px;font-weight:900;color:{pvol_c};
+                              line-height:1;margin-bottom:4px;">{fmt_pct(p_vol)}</div>
                   <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
-                              letter-spacing:.07em;margin-bottom:14px;">P(volatile day)</div>
+                              letter-spacing:.07em;margin-bottom:12px;">P(volatile day)</div>
                   <div style="display:flex;justify-content:space-between;
-                              align-items:center;margin-bottom:10px;">
+                              align-items:center;margin-bottom:12px;">
                     <span style="background:{lift_c}22;color:{lift_c};font-size:10px;
                                  font-weight:800;padding:3px 8px;border-radius:4px;
                                  letter-spacing:.05em;">{lift_txt}</span>
-                    <span style="color:#8b949e;font-size:11px;">
-                      Lift {lift:.2f}x</span>
+                    <span style="color:#8b949e;font-size:11px;">Lift {lift:.2f}x</span>
                   </div>
                   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
-                    <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Close</div>
-                      <div style="color:#e6edf3;font-weight:700;">{fmt_dollar(close)}</div>
-                    </div>
-                    <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Chg %</div>
-                      <div style="color:{chg_c};font-weight:700;">
-                        {f"{chg*100:+.2f}%" if not math.isnan(chg) else "—"}</div>
-                    </div>
+                    {hl_html}
+                    {vwap_html}
                     <div>
                       <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">RSI(14)</div>
                       <div style="color:#e6edf3;font-weight:700;">
                         {f"{rsi:.0f}" if not math.isnan(rsi) else "—"}</div>
-                    </div>
-                    <div>
-                      <div style="color:#8b949e;font-size:9px;text-transform:uppercase;">Gap %</div>
-                      <div style="color:#e6edf3;font-weight:700;">
-                        {f"{row.get('abs_gap_pct',float('nan'))*100:.2f}%" if not math.isnan(row.get("abs_gap_pct",float("nan"))) else "—"}</div>
                     </div>
                   </div>
                 </div>
@@ -678,6 +744,9 @@ elif page == "Gap Reversal":
     gap_today = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir in ("up", "down")]
     no_gap    = [(tkr, tod, sb) for tkr, tod, sb in today_rows if tod.gap_dir not in ("up", "down")]
 
+    # Live quotes for fill progress bars (TTL=30 s)
+    gap_live = load_live_quotes(tuple(gap_tickers))
+
     # ── Day summary banner ────────────────────────────────────────────────────
     n_gaps  = len(gap_today)
     n_watch = sum(1 for _, tod, _ in gap_today if tod.signal == "WATCH_FILL")
@@ -725,7 +794,10 @@ elif page == "Gap Reversal":
             fill_r  = f"{tod.hist_fill_rate*100:.0f}%" if tod.hist_fill_rate is not None else "—"
             rev_r   = f"{tod.hist_rev_rate*100:.0f}%" if tod.hist_rev_rate is not None else "—"
             med_rev = f"{tod.hist_med_rev_pts:+.2f} pts" if tod.hist_med_rev_pts is not None else "—"
-            progress = fill_progress_bar(tod.open_price, tod.fill_level, None)
+            # Use live Polygon price if available, otherwise no progress shown
+            live_snap   = gap_live.get(tkr, {})
+            live_cur    = live_snap.get("last_price") or None
+            progress    = fill_progress_bar(tod.open_price, tod.fill_level, live_cur)
 
             with cols[i % n_cols]:
                 st.markdown(
