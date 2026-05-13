@@ -286,6 +286,16 @@ def load_live_quotes(tickers: tuple) -> dict:
         return {}
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_backtest(ticker: str = "SPY", start_equity: float = 500.0, n_months: int = 6):
+    """Run (or load cached) real 6-month historical backtest. TTL=1h."""
+    try:
+        from src.backtest import run_jackpot_backtest
+        return run_jackpot_backtest(ticker=ticker, start_equity=start_equity, n_months=n_months)
+    except Exception as e:
+        return None
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_0dte_alert(ticker: str = "SPY") -> dict:
     """Live 0DTE entry alert — auto-refreshes every 30 s.
@@ -2070,6 +2080,210 @@ if page == "Command Center":
         Only risk capital you can afford to lose entirely.
       </div>
     </div>""")
+
+    # ── Real Historical Backtest ────────────────────────────────────────────────
+    st.markdown("---")
+    section("Real 6-Month Backtest — Actual Results",
+            f"Walk-forward replay on real SPY data · {datetime.now().year - 1} historical prices · ${equity_input:,.0f} starting balance")
+
+    with st.spinner("Running walk-forward backtest on real historical data… (~30 s first run, cached after)"):
+        _bt = load_backtest("SPY", equity_input, 6)
+
+    if _bt is None:
+        st.warning("Backtest could not run — check that SPY OHLCV data is available.")
+    else:
+        # ── Summary stat row ─────────────────────────────────────────────────
+        _bt_net    = _bt.end_equity - equity_input
+        _bt_mult   = _bt.end_equity / equity_input
+        _bt_net_c  = "#3fb950" if _bt_net >= 0 else "#f85149"
+        _bt_dd_c   = "#f85149" if _bt.max_drawdown_pct < -20 else "#ffd633" if _bt.max_drawdown_pct < -10 else "#3fb950"
+
+        st.html(f"""
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;
+                    margin-bottom:16px;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <div style="background:#161b22;border:2px solid {_bt_net_c};border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">Final Equity</div>
+            <div style="font-size:24px;font-weight:900;color:#fff;">
+              ${_bt.end_equity:,.2f}</div>
+            <div style="font-size:11px;color:{_bt_net_c};font-weight:700;margin-top:3px;">
+              {'+' if _bt_net >= 0 else ''}{_bt_net:,.2f} ({_bt_mult:.2f}×)</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">Trade Days</div>
+            <div style="font-size:24px;font-weight:900;color:#e6edf3;">{_bt.n_trades}</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:3px;">
+              of {_bt.n_days} sessions</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #3fb950;border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">Win Rate</div>
+            <div style="font-size:24px;font-weight:900;color:#3fb950;">
+              {_bt.win_rate*100:.1f}%</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:3px;">
+              {_bt.n_wins}W / {_bt.n_losses}L</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #ffd633;border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">JACKPOT Days</div>
+            <div style="font-size:24px;font-weight:900;color:#ffd633;">{_bt.n_jackpot}</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:3px;">
+              HOT days: {_bt.n_hot}</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">Peak Equity</div>
+            <div style="font-size:24px;font-weight:900;color:#58a6ff;">
+              ${_bt.max_equity:,.2f}</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:3px;">
+              min: ${_bt.min_equity:,.2f}</div>
+          </div>
+          <div style="background:#161b22;border:1px solid {_bt_dd_c}33;border-radius:10px;
+                      padding:14px;text-align:center;">
+            <div style="color:#8b949e;font-size:9px;text-transform:uppercase;
+                        letter-spacing:.1em;margin-bottom:4px;">Max Drawdown</div>
+            <div style="font-size:24px;font-weight:900;color:{_bt_dd_c};">
+              {_bt.max_drawdown_pct:.1f}%</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:3px;">
+              peak-to-trough</div>
+          </div>
+        </div>""")
+
+        # ── Month-by-month breakdown ──────────────────────────────────────────
+        _log = _bt.trade_log.copy()
+        _log["month_label"] = _log["date"].dt.to_period("M").astype(str)
+        _months_grp = (
+            _log.groupby("month_label")
+            .agg(
+                start_eq  = ("equity", "first"),
+                end_eq    = ("equity", "last"),
+                trades    = ("signal", lambda s: (s != "SKIP").sum()),
+                wins      = ("outcome", lambda s: (s == "WIN").sum()),
+                losses    = ("outcome", lambda s: (s == "LOSS").sum()),
+                jackpots  = ("signal", lambda s: (s == "GO_JACKPOT").sum()),
+            )
+            .reset_index()
+        )
+        # recalc start_eq as the equity at the BEGINNING of each month
+        _month_start_eqs = []
+        for _, _mrow in _months_grp.iterrows():
+            _m_rows = _log[_log["month_label"] == _mrow["month_label"]]
+            # equity at start of this month = equity at end of previous day
+            _idx0 = _m_rows.index[0]
+            _prev = _log[_log.index < _idx0]["equity"]
+            _month_start_eqs.append(_prev.iloc[-1] if len(_prev) > 0 else equity_input)
+        _months_grp["start_eq"] = _month_start_eqs
+
+        _mo_rows_html = ""
+        _prev_eq = equity_input
+        for _, _mo in _months_grp.iterrows():
+            _mo_end = float(_mo["end_eq"])
+            _mo_gain = _mo_end - _prev_eq
+            _mo_g_c = "#3fb950" if _mo_gain >= 0 else "#f85149"
+            _mo_wr = (_mo["wins"] / _mo["trades"] * 100) if _mo["trades"] > 0 else 0
+            _mo_rows_html += f"""
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:8px 6px;color:#8b949e;font-weight:600;">{_mo["month_label"]}</td>
+              <td style="padding:8px 6px;text-align:right;color:#6e7681;">
+                ${_prev_eq:,.2f}</td>
+              <td style="padding:8px 6px;text-align:right;font-weight:800;color:#e6edf3;">
+                ${_mo_end:,.2f}</td>
+              <td style="padding:8px 6px;text-align:right;font-weight:700;color:{_mo_g_c};">
+                {'+' if _mo_gain >= 0 else ''}{_mo_gain:,.2f}</td>
+              <td style="padding:8px 6px;text-align:center;color:#e6edf3;">
+                {int(_mo['trades'])}</td>
+              <td style="padding:8px 6px;text-align:center;color:#ffd633;">
+                {int(_mo['jackpots'])}</td>
+              <td style="padding:8px 6px;text-align:center;
+                         color:{'#3fb950' if _mo_wr >= 50 else '#f85149'};">
+                {_mo_wr:.0f}%</td>
+            </tr>"""
+            _prev_eq = _mo_end
+
+        st.html(f"""
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:14px;
+                    padding:20px 24px;margin-bottom:16px;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:12px;">
+            Month-by-Month Performance · {_bt.start_date} → {_bt.end_date}</div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;
+                        font-variant-numeric:tabular-nums;">
+            <thead>
+              <tr style="border-bottom:2px solid #30363d;">
+                <th style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:left;">Month</th>
+                <th style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:right;">Start</th>
+                <th style="color:#e6edf3;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:right;">End</th>
+                <th style="color:#58a6ff;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:right;">P&L</th>
+                <th style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:center;">Trades</th>
+                <th style="color:#ffd633;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:center;">JKPT</th>
+                <th style="color:#3fb950;font-size:10px;text-transform:uppercase;
+                           letter-spacing:.06em;padding:6px 6px;font-weight:700;
+                           text-align:center;">Win%</th>
+              </tr>
+            </thead>
+            <tbody style="line-height:1.9;">{_mo_rows_html}</tbody>
+          </table>
+        </div>""")
+
+        # ── Full trade log ─────────────────────────────────────────────────
+        with st.expander("📋 Full Day-by-Day Trade Log", expanded=False):
+            _display_log = _bt.trade_log[_bt.trade_log["signal"] != "SKIP"].copy()
+            _display_log["date"]         = _display_log["date"].dt.strftime("%Y-%m-%d")
+            _display_log["straddle_ret"] = (_display_log["straddle_ret"] * 100).round(1).astype(str) + "%"
+            _display_log["alloc"]        = _display_log["alloc_dollars"].apply(lambda x: f"${x:,.2f}")
+            _display_log["P&L"]          = _display_log["dollar_change"].apply(
+                lambda x: f"+${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}")
+            _display_log["equity"]       = _display_log["equity"].apply(lambda x: f"${x:,.2f}")
+            _display_log["p_vol"]        = (_display_log["p_vol"] * 100).round(1).astype(str) + "%"
+            _display_log["p_pnl"]        = (_display_log["p_pnl"] * 100).round(1).astype(str) + "%"
+
+            st.dataframe(
+                _display_log[["date", "signal", "p_vol", "p_pnl",
+                               "straddle_ret", "alloc", "P&L", "equity", "outcome"]].rename(columns={
+                    "date": "Date", "signal": "Signal",
+                    "p_vol": "P(vol)", "p_pnl": "P(pnl)",
+                    "straddle_ret": "Actual Return", "alloc": "Risked",
+                    "equity": "Equity After", "outcome": "Result",
+                }),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        # ── Methodology note ─────────────────────────────────────────────────
+        st.html(f"""
+        <div style="background:#0c1520;border:1px solid #1d3a5c;border-radius:8px;
+                    padding:12px 16px;font-size:11px;color:#6e7681;line-height:1.8;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <strong style="color:#58a6ff;">How this backtest works:</strong>
+          Walk-forward expanding window — the model trains only on data before each prediction date,
+          never touching future prices. Signal thresholds: P(vol) ≥ 30% for GO_HOT,
+          additionally P(pnl) ≥ 55% for GO_JACKPOT. Trade P&L uses
+          <em>actual SPY OHLCV prices</em> (not simulated win rates) — the
+          straddle model prices ATM premium as ~1.1% of spot (dynamic per-ticker IV proxy)
+          and measures payoff from the real close/intraday moves.
+          Allocation: JACKPOT = 25% Kelly, HOT = 15% Kelly. Equity compounds daily.
+          Window: {_bt.start_date} → {_bt.end_date} ({_bt.n_days} sessions).
+        </div>""")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
