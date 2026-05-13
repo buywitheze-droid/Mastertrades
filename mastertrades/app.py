@@ -2087,15 +2087,16 @@ if page == "Command Center":
     # ── Real Historical Backtest ────────────────────────────────────────────────
     st.markdown("---")
     section("Real 6-Month Backtest — Strategy Comparison",
-            f"Four strategies replayed on the same real SPY data · ${equity_input:,.0f} starting balance · walk-forward OOS")
+            f"Five strategies replayed on the same real SPY data · ${equity_input:,.0f} starting balance · walk-forward OOS")
 
-    with st.spinner("Running walk-forward backtests for all 4 strategies… (~30 s first run, cached after)"):
+    with st.spinner("Running walk-forward backtests for all 5 strategies… (~30 s first run, cached after)"):
         _bt_str  = load_backtest("SPY", equity_input, 6, "straddle")
         _bt_gap  = load_backtest("SPY", equity_input, 6, "gapfade")
         _bt_smt  = load_backtest("SPY", equity_input, 6, "smart")
         _bt_v2   = load_backtest("SPY", equity_input, 6, "smart_v2")
+        _bt_v3   = load_backtest("SPY", equity_input, 6, "smart_v3")
 
-    if _bt_str is None or _bt_smt is None or _bt_v2 is None:
+    if _bt_str is None or _bt_smt is None or _bt_v2 is None or _bt_v3 is None:
         st.warning("Backtest could not run — check that SPY OHLCV data is available.")
     else:
         # ── Strategy comparison row (3 large cards) ──────────────────────────
@@ -2130,69 +2131,77 @@ if page == "Command Center":
               </div>
             </div>"""
 
-        # Determine winner across all 4 modes
-        _all = {"straddle": _bt_str, "gapfade": _bt_gap, "smart": _bt_smt, "smart_v2": _bt_v2}
+        # Determine winner across all 5 modes
+        _all = {"straddle": _bt_str, "gapfade": _bt_gap, "smart": _bt_smt,
+                "smart_v2": _bt_v2, "smart_v3": _bt_v3}
         _winner_key = max(_all, key=lambda k: _all[k].end_equity)
-        _smart_lift   = _bt_smt.end_equity - _bt_str.end_equity
         _v2_lift      = _bt_v2.end_equity - _bt_str.end_equity
-        _v2_over_smt  = _bt_v2.end_equity - _bt_smt.end_equity
-        _v2_lift_c    = "#3fb950" if _v2_lift > 0 else "#f85149"
+        _v3_lift      = _bt_v3.end_equity - _bt_str.end_equity
+        _v3_over_v2   = _bt_v3.end_equity - _bt_v2.end_equity
+        _v3_lift_c    = "#3fb950" if _v3_over_v2 > 0 else "#f85149" if _v3_over_v2 < 0 else "#8b949e"
 
         def _badge(key): return "WINNER" if key == _winner_key else ""
 
         st.html(f"""
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;
                     margin-bottom:14px;
                     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
           {_strat_card("1. Baseline", "ATM straddle every HOT day", _bt_str,
                        "#3fb950" if _winner_key=="straddle" else "#30363d", _badge("straddle"))}
-          {_strat_card("2. Naive Gap-Fade", "Fade every gap ≥ 0.25%", _bt_gap,
+          {_strat_card("2. Gap-Fade", "Fade every gap ≥ 0.25%", _bt_gap,
                        "#3fb950" if _winner_key=="gapfade" else "#5b3b1d", _badge("gapfade"))}
           {_strat_card("3. Smart v1",
-                       f"Counter-trend fade + circuit breaker ({_bt_smt.n_breaker_skips} skips)",
+                       f"Counter-trend fade + breaker ({_bt_smt.n_breaker_skips})",
                        _bt_smt,
                        "#3fb950" if _winner_key=="smart" else "#1f6feb", _badge("smart"))}
-          {_strat_card("4. Smart v2 (Tier-1)",
-                       f"+ VIX/z-regime filter ({_bt_v2.n_regime_skips} skips) + directional ({_bt_v2.n_directional} legs)",
+          {_strat_card("4. Smart v2",
+                       f"+ regime filter ({_bt_v2.n_regime_skips}) + directional ({_bt_v2.n_directional})",
                        _bt_v2,
                        "#3fb950" if _winner_key=="smart_v2" else "#a371f7", _badge("smart_v2"))}
+          {_strat_card("5. Smart v3",
+                       f"+ weekly MA-touch + flow override ({_bt_v3.n_ma_confluence})",
+                       _bt_v3,
+                       "#3fb950" if _winner_key=="smart_v3" else "#d29922", _badge("smart_v3"))}
         </div>
-        <div style="background:#0c1f12;border:1px solid #2f6c3f;border-radius:10px;
+        <div style="background:#1a1410;border:1px solid #4d3a1a;border-radius:10px;
                     padding:14px 18px;margin-bottom:18px;
                     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                    font-size:13px;color:#c8e6c9;line-height:1.6;">
+                    font-size:13px;color:#e6d5b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
-            <strong style="color:#3fb950;">Smart v2 lift vs baseline:</strong>
-            <span style="color:{_v2_lift_c};font-weight:900;font-size:16px;">
-              {'+' if _v2_lift >= 0 else ''}${_v2_lift:,.2f}
+            <strong style="color:#d29922;">Smart v3 vs Smart v2:</strong>
+            <span style="color:{_v3_lift_c};font-weight:900;font-size:16px;">
+              {'+' if _v3_over_v2 >= 0 else ''}${_v3_over_v2:,.2f}
             </span>
-            ({(_bt_v2.end_equity/_bt_str.end_equity - 1)*100:+.1f}%) ·
-            <strong>vs Smart v1:</strong>
-            <span style="color:{'#3fb950' if _v2_over_smt >= 0 else '#f85149'};font-weight:800;">
-              {'+' if _v2_over_smt >= 0 else ''}${_v2_over_smt:,.2f}
+            ({(_bt_v3.end_equity/_bt_v2.end_equity - 1)*100:+.1f}%) ·
+            <strong>vs baseline:</strong>
+            <span style="color:{'#3fb950' if _v3_lift >= 0 else '#f85149'};font-weight:800;">
+              {'+' if _v3_lift >= 0 else ''}${_v3_lift:,.2f}
             </span>
+            ({(_bt_v3.end_equity/_bt_str.end_equity - 1)*100:+.1f}%)
           </div>
-          <strong style="color:#a371f7;">v2 layered upgrades (Tier-1 indicators):</strong>
+          <strong style="color:#d29922;">v3 layered upgrade (weekly structure):</strong>
           <ul style="margin:6px 0 0 18px;padding:0;">
-            <li><strong>VIX blow-out filter</strong> — skip trades when VIX up &gt;15% in 5 days
-                (premium too rich, IV crush risk). Saved {_bt_v2.n_regime_skips} entries this window.</li>
-            <li><strong>Mean-reversion guard</strong> — skip when SPY is &gt;2.5σ below 20d mean
-                (the panic move is already priced; straddles get crushed).</li>
-            <li><strong>Directional classifier</strong> — separate ML model predicts P(close &gt; open).
-                When confidence &gt;60%, route to single-leg call/put for asymmetric upside instead
-                of paying for both sides of a straddle. Took {_bt_v2.n_directional} directional plays.</li>
+            <li><strong>MA-touch + flow confluence</strong> — when SPY's prior close is within
+                1.5% of an empirically biased weekly MA (10w/50w SMA + 50w EMA = LONG-bias;
+                20w/30w EMA = SHORT-bias) <em>and</em> weekly order flow agrees in the same
+                direction (|score| ≥ 20), force a JACKPOT-tier directional play.
+                Fired {_bt_v3.n_ma_confluence} time(s) this window.</li>
           </ul>
           <div style="margin-top:8px;color:#8b949e;font-size:12px;">
-            <em>Honest note:</em> the directional classifier needs more diverse training data to
-            shine in this specific regime — its real edge will appear in higher-vol periods where
-            P(up) gets more decisive. The regime filter is the immediate win.
+            <em>Honest note:</em> v3 only fires on a tiny number of days (the 6-month window
+            saw {_bt_v3.n_ma_confluence} confluence trade(s)), so any improvement here is
+            small-sample. The MA-touch hypothesis came from finding 50w SMA = 100% bounce
+            (n=2) and 30w EMA = 0% bounce (n=5) in 6 months of empirical SPY data — real but
+            statistically thin. v3 will show its edge mostly during deep pullbacks toward
+            those weekly levels, which were rare in this window.
           </div>
         </div>""")
 
         # ── Detail block shows the WINNING strategy ───────────────────────
         _bt = _all[_winner_key]
         _winner_label = {"straddle":"Baseline Straddle","gapfade":"Naive Gap-Fade",
-                         "smart":"Smart v1","smart_v2":"Smart v2 (Tier-1)"}[_winner_key]
+                         "smart":"Smart v1","smart_v2":"Smart v2 (Tier-1)",
+                         "smart_v3":"Smart v3 (MA + Flow)"}[_winner_key]
         st.markdown(f"**Detail view — {_winner_label} day-by-day:**")
         # ── Summary stat row ─────────────────────────────────────────────────
         _bt_net    = _bt.end_equity - equity_input

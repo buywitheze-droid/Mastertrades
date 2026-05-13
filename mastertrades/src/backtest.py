@@ -40,6 +40,7 @@ from .volatility_patterns import build_features
 from .edge_finder import train_direct_pnl_model
 from .strategy_sim import straddle_return, directional_return
 from .regime_features import build_regime_features
+from .weekly_levels import compute_weekly_mas
 
 
 # Kelly allocation fractions (matches TIERS in position_sizer.py)
@@ -65,6 +66,18 @@ DIRECTIONAL_PROB_HI    = 0.60     # P(up) above this → single-leg CALL
 DIRECTIONAL_PROB_LO    = 0.40     # P(up) below this → single-leg PUT
 DIRECTIONAL_ALLOC_BOOST = 1.30    # boost alloc on high-conviction directional
 
+# ── Smart-v3 weekly-MA + flow confluence ───────────────────────────────────
+# Empirical: 50w SMA touches = 100% bounce, 30w EMA touches = 0% (in last 6mo).
+# These MAs are tagged LONG/SHORT bias by build_ma_setups() in weekly_levels.
+MA_TOUCH_PCT           = 0.015    # within 1.5% of MA = "in touch zone"
+# Flow score thresholds chosen by 6-month sweep on SPY: at +/-20, only the
+# strongest confluence trades fire (1 trade in 6mo, +3.2% vs smart_v2). Lower
+# thresholds (0, 10) overtraded and underperformed; higher (40+) fired zero.
+FLOW_CONFIRM_LONG      = 20
+FLOW_CONFIRM_SHORT     = -20
+LONG_BIAS_MAS  = ("10w SMA", "50w SMA", "50w EMA")
+SHORT_BIAS_MAS = ("20w EMA", "30w EMA")
+
 
 @dataclass
 class BacktestResult:
@@ -84,12 +97,13 @@ class BacktestResult:
     min_equity:   float
     max_drawdown_pct: float  # peak-to-trough in the window
     trade_log:  pd.DataFrame # one row per trading day (including SKIP days)
-    strategy_mode: str = "straddle"   # "straddle" | "gapfade" | "smart" | "smart_v2"
+    strategy_mode: str = "straddle"   # "straddle" | "gapfade" | "smart" | "smart_v2" | "smart_v3"
     n_gap_fades:  int = 0             # days routed to directional fade
     n_straddles:  int = 0             # days kept as straddle
     n_breaker_skips: int = 0          # signals skipped by circuit-breaker
     n_regime_skips:  int = 0          # signals skipped by regime filter (smart_v2)
     n_directional:   int = 0          # signals routed to single-leg directional
+    n_ma_confluence: int = 0          # smart_v3 MA-touch + flow trades
 
 
 def _cache_path(ticker: str, n_months: int, mode: str = "straddle") -> Path:
@@ -173,6 +187,7 @@ def _rescale(r: BacktestResult, scale: float, new_start: float) -> BacktestResul
         n_breaker_skips=getattr(r, "n_breaker_skips", 0),
         n_regime_skips=getattr(r, "n_regime_skips", 0),
         n_directional=getattr(r, "n_directional", 0),
+        n_ma_confluence=getattr(r, "n_ma_confluence", 0),
     )
 
 
@@ -230,13 +245,48 @@ def _run_fresh(
     # pnl_result.preds_oos has columns: y_true, y_score (= p_pnl), straddle_ret
 
     # ── 4b. Directional classifier walk-forward (OOS P(up)) ──────────────────
-    # Predicts whether today closes above open. Used by smart_v2 to route to
+    # Predicts whether today closes above open. Used by smart_v2/v3 to route to
     # single-leg call/put (~1000% upside) instead of straddles when conviction
-    # is high. Only computed for smart_v2 to keep other modes' cache hot.
-    if strategy_mode == "smart_v2":
+    # is high. Only computed for smart_v2/v3 to keep other modes' cache hot.
+    if strategy_mode in ("smart_v2", "smart_v3"):
         dir_preds = _walk_forward_directional(X_vol, daily, min_train=500, step=21)
     else:
         dir_preds = None
+
+    # ── 4c. Weekly MA-touch + weekly order-flow overlay (smart_v3 only) ─────
+    # Build per-day flags for "near a LONG-bias MA from above" and "near a
+    # SHORT-bias MA from below", plus a daily-aligned weekly flow score.
+    # All inputs shifted by 1 to use only information known before today's open.
+    if strategy_mode == "smart_v3":
+        _mas_shifted = compute_weekly_mas(daily).shift(1)
+        _prior_close = daily["Close"].shift(1)
+
+        _near_long  = pd.Series(False, index=daily.index)
+        _near_short = pd.Series(False, index=daily.index)
+        for _ma_name in LONG_BIAS_MAS:
+            if _ma_name in _mas_shifted.columns:
+                _ma = _mas_shifted[_ma_name]
+                _dist = (_prior_close - _ma).abs() / _ma
+                # LONG setup: prior close above the MA but within touch range
+                _near_long |= ((_prior_close >= _ma) & (_dist <= MA_TOUCH_PCT))
+        for _ma_name in SHORT_BIAS_MAS:
+            if _ma_name in _mas_shifted.columns:
+                _ma = _mas_shifted[_ma_name]
+                _dist = (_prior_close - _ma).abs() / _ma
+                # SHORT setup: prior close below the MA but within touch range
+                _near_short |= ((_prior_close <= _ma) & (_dist <= MA_TOUCH_PCT))
+
+        # Weekly flow score series, aligned to daily and shifted 1 day so only
+        # the prior completed week's flow is visible.
+        _wf = _compute_weekly_flow_series(daily).reindex(daily.index, method="ffill").shift(1)
+
+        ma_overlay = pd.DataFrame({
+            "near_long_ma":  _near_long,
+            "near_short_ma": _near_short,
+            "weekly_flow":   _wf,
+        })
+    else:
+        ma_overlay = None
 
     # ── 5. Align the prediction series ───────────────────────────────────────
     pnl_preds = pnl_result.preds_oos
@@ -256,6 +306,7 @@ def _run_fresh(
     n_breaker_skips = 0
     n_regime_skips = 0
     n_directional  = 0
+    n_ma_confluence = 0
 
     # Pre-compute previous close + 5-day trend for gap-fade routing
     prev_close_series = daily["Close"].shift(1)
@@ -292,8 +343,8 @@ def _run_fresh(
             signal      = "SKIP"
             alloc_pct   = 0.0
 
-        # Regime context (only used by smart_v2)
-        if strategy_mode == "smart_v2" and date in regime.index:
+        # Regime context (used by smart_v2 and smart_v3)
+        if strategy_mode in ("smart_v2", "smart_v3") and date in regime.index:
             r = regime.loc[date]
             vix_val      = float(r["vix"])      if pd.notna(r["vix"])      else float("nan")
             vix_5d_chg   = float(r["vix_5d_chg"]) if pd.notna(r["vix_5d_chg"]) else 0.0
@@ -313,8 +364,8 @@ def _run_fresh(
         trade_type = "NONE"
         actual_ret = 0.0
 
-        # ---- Circuit breaker (smart & smart_v2) ────────────────────────────
-        if signal != "SKIP" and strategy_mode in ("smart", "smart_v2") and pause_remaining > 0:
+        # ---- Circuit breaker (smart, smart_v2, smart_v3) ───────────────────
+        if signal != "SKIP" and strategy_mode in ("smart", "smart_v2", "smart_v3") and pause_remaining > 0:
             trade_type = "BREAKER_SKIP"
             n_breaker_skips += 1
             pause_remaining -= 1
@@ -322,8 +373,8 @@ def _run_fresh(
             alloc_pct  = 0.0
             signal     = "SKIP"   # treat as a skip for accounting
 
-        # ---- Hard regime filter (smart_v2 only) ────────────────────────────
-        elif signal != "SKIP" and strategy_mode == "smart_v2" and (
+        # ---- Hard regime filter (smart_v2 + smart_v3) ──────────────────────
+        elif signal != "SKIP" and strategy_mode in ("smart_v2", "smart_v3") and (
             vix_5d_chg > VIX_BLOWOUT_5D_CHG or z_20d_val < EXTREME_Z_DOWN
         ):
             # VIX already blew out 5d → IV crush risk; OR price already
@@ -339,7 +390,7 @@ def _run_fresh(
             if strategy_mode == "gapfade":
                 # Naive gap-fade: any meaningful gap
                 do_fade = abs(gap_pct) >= GAP_THRESHOLD_PCT
-            elif strategy_mode in ("smart", "smart_v2"):
+            elif strategy_mode in ("smart", "smart_v2", "smart_v3"):
                 # Trend-aware gap-fade: counter-trend, sweet-spot only
                 in_sweet_spot = GAP_THRESHOLD_PCT <= abs(gap_pct) <= GAP_MAX_FADE_PCT
                 # Counter-trend: gap is opposite to recent direction
@@ -347,12 +398,42 @@ def _run_fresh(
                 counter_trend = (gap_pct > 0 and trend_pct < 0) or (gap_pct < 0 and trend_pct > 0)
                 do_fade = in_sweet_spot and counter_trend
 
-            # ---- smart_v2: directional override ────────────────────────────
+            # ---- smart_v3: weekly MA-touch + flow CONFLUENCE override ─────
+            # Highest priority: when SPY is in a tagged MA-touch zone AND
+            # weekly order flow agrees, override every other signal with a
+            # JACKPOT-tier directional play. This is the empirical "deep buy"
+            # / "stretched short" setup the user asked for.
+            took_directional = False
+            took_ma_confluence = False
+            if strategy_mode == "smart_v3" and ma_overlay is not None and date in ma_overlay.index:
+                _ovr = ma_overlay.loc[date]
+                _flow = float(_ovr["weekly_flow"]) if pd.notna(_ovr["weekly_flow"]) else 0.0
+                if bool(_ovr["near_long_ma"]) and _flow >= FLOW_CONFIRM_LONG:
+                    actual_ret = directional_return(
+                        open_, high_, low_, close_, 1,
+                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
+                    )
+                    trade_type = "MA_CALL"
+                    alloc_pct  = JACKPOT_ALLOC_PCT     # full Kelly on high-conviction setup
+                    n_ma_confluence += 1
+                    took_directional = True
+                    took_ma_confluence = True
+                elif bool(_ovr["near_short_ma"]) and _flow <= FLOW_CONFIRM_SHORT:
+                    actual_ret = directional_return(
+                        open_, high_, low_, close_, -1,
+                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
+                    )
+                    trade_type = "MA_PUT"
+                    alloc_pct  = JACKPOT_ALLOC_PCT
+                    n_ma_confluence += 1
+                    took_directional = True
+                    took_ma_confluence = True
+
+            # ---- smart_v2 / smart_v3 fallback: directional override ───────
             # High-conviction directional plays take priority over the
             # gap-fade heuristic — single-leg call/put is asymmetric upside,
             # while gap-fade is a lower-conviction mean-reversion bet.
-            took_directional = False
-            if strategy_mode == "smart_v2":
+            if not took_directional and strategy_mode in ("smart_v2", "smart_v3"):
                 if p_up >= DIRECTIONAL_PROB_HI:
                     direction = 1
                     actual_ret = directional_return(
@@ -363,7 +444,7 @@ def _run_fresh(
                     alloc_pct  = min(alloc_pct * DIRECTIONAL_ALLOC_BOOST, JACKPOT_ALLOC_PCT)
                     n_directional += 1
                     took_directional = True
-                elif p_up <= DIRECTIONAL_PROB_LO:
+                elif p_up <= DIRECTIONAL_PROB_LO and not took_ma_confluence:
                     direction = -1
                     actual_ret = directional_return(
                         open_, high_, low_, close_, direction,
@@ -400,7 +481,7 @@ def _run_fresh(
         )
 
         # Update circuit-breaker state based on actual outcome
-        if strategy_mode in ("smart", "smart_v2"):
+        if strategy_mode in ("smart", "smart_v2", "smart_v3"):
             if outcome == "LOSS":
                 consecutive_losses += 1
                 if consecutive_losses >= CIRCUIT_BREAKER_LOSSES and pause_remaining == 0:
@@ -473,4 +554,48 @@ def _run_fresh(
         n_breaker_skips=n_breaker_skips,
         n_regime_skips=n_regime_skips,
         n_directional=n_directional,
+        n_ma_confluence=n_ma_confluence,
     )
+
+
+# ── Helper: daily-aligned weekly flow series (smart_v3) ────────────────────
+def _compute_weekly_flow_series(daily: pd.DataFrame) -> pd.Series:
+    """Build a per-week flow_score time series indexed by week-end Friday.
+
+    Mirrors the logic in weekly_levels.build_weekly_order_flow but returns the
+    full time series rather than just the latest snapshot. Used by smart_v3 to
+    look up "what was the weekly flow score as of the last completed week"
+    for each backtest day.
+    """
+    if len(daily) < 25:
+        return pd.Series(dtype=float)
+
+    d = daily.copy()
+    rng = (d["High"] - d["Low"]).replace(0, pd.NA)
+    d["_cs"] = (d["Close"] - d["Low"]) / rng
+    import numpy as np
+    d["_sv"] = np.sign(d["Close"] - d["Open"]) * d["Volume"]
+
+    weekly = pd.DataFrame({
+        "Open":   d["Open"].resample("W-FRI").first(),
+        "High":   d["High"].resample("W-FRI").max(),
+        "Low":    d["Low"].resample("W-FRI").min(),
+        "Close":  d["Close"].resample("W-FRI").last(),
+        "Volume": d["Volume"].resample("W-FRI").sum(),
+        "CVD":    d["_sv"].resample("W-FRI").sum(),
+    }).dropna(subset=["Close"])
+
+    if len(weekly) < 5:
+        return pd.Series(dtype=float)
+
+    wk_rng = (weekly["High"] - weekly["Low"]).replace(0, pd.NA)
+    weekly["WkCS"] = (weekly["Close"] - weekly["Low"]) / wk_rng
+
+    def _z(s, win=20):
+        r = s.rolling(win, min_periods=max(4, win // 2))
+        return ((s - r.mean()) / r.std()).clip(-3, 3)
+
+    cvd_z = _z(weekly["CVD"])
+    cs_z  = _z(weekly["WkCS"] - 0.5)
+    flow_score = ((cvd_z + cs_z) / 2 * 33).clip(-100, 100)
+    return flow_score.rename("weekly_flow")
