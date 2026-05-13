@@ -692,38 +692,65 @@ if page == "Today's Plays":
     except Exception as e:
         source_health["ML Jackpot"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
 
-    # 3. Gap Reversal — WATCH_FILL is STRONG (≥70% fill rate), NEAR_FILL is moderate (≥50%)
+    # 3. Gap Fill — gated by per-ticker validated config (1-yr backtest).
+    #    Edge metric is REALISED average % from backtest, NOT historical fill
+    #    rate. Fill rate is a vanity stat; payoff size is what pays.
+    #    See src/gap_per_ticker_config.py for the validated configuration.
     try:
+        from datetime import date as _date
+        from src.gap_per_ticker_config import gap_fill_decision, GAP_FILL_PER_TICKER
         gap_results = load_cc_gap_verdicts()
-        n_in = n_kept = 0
+        n_in = n_kept = n_dropped_by_cfg = 0
+        weekday_idx = _date.today().weekday()
         for tkr, tg in gap_results:
             if tg.signal not in ("WATCH_FILL", "NEAR_FILL"):
                 continue
             n_in += 1
-            if tg.hist_fill_rate is None or tg.hist_n_similar < MIN_N:
+            tradeable, cfg, is_prime = gap_fill_decision(
+                tkr, tg.gap_pct, tg.gap_dir, weekday_idx
+            )
+            if not tradeable:
+                n_dropped_by_cfg += 1
                 continue
-            win_rate = tg.hist_fill_rate * 100
-            avg_ret  = tg.distance_to_fill_pct * 100   # expected % move to fill
-            if not _passes_gate(win_rate, avg_ret, tg.hist_n_similar):
-                continue
-            # WATCH_FILL = high-edge bucket (≥70% fill rate); NEAR_FILL = moderate (≥50%)
-            conf = 1.0 if tg.signal == "WATCH_FILL" else 0.65
-            edge = _edge(win_rate, avg_ret, tg.hist_n_similar, conf)
+            # Edge is now grounded in REALISED $ per $1k from the backtest,
+            # not in hopeful fill-rate × distance-to-fill maths.
+            # PRIME tier swaps to its own (much stronger) backtest slice.
+            bt = cfg["prime"]["backtest"] if is_prime else cfg["backtest"]
+            avg_realised_pct = bt["avg_pct"]            # % per trade
+            sample_n         = bt["n"]
+            base_conf = 1.0 if is_prime else (0.85 if tg.signal == "WATCH_FILL" else 0.65)
+            edge = _edge(bt["win_rate"], avg_realised_pct, sample_n, base_conf)
             direction = "PUTS (gap up → fill down)" if tg.gap_dir == "up" else "CALLS (gap down → fill up)"
+            tier_tag = "💎 PRIME" if is_prime else tg.signal
             plays.append({
                 "source": "Gap Fill", "ticker": tkr,
-                "tag": f"Gap {tg.gap_dir} {tg.gap_pct*100:+.2f}%",
-                "state": tg.signal,
+                "tag": f"Gap {tg.gap_dir} {tg.gap_pct*100:+.2f}%"
+                       + (" · Thu PRIME" if is_prime else ""),
+                "state": tier_tag,
                 "action": f"BUY {direction}",
                 "entry": tg.open_price, "target": tg.fill_level,
-                "win_rate": win_rate, "avg_ret": avg_ret, "n": tg.hist_n_similar,
-                "edge": edge,
-                "reason": f"Similar gaps fill {win_rate:.0f}% of the time (n={tg.hist_n_similar}). "
-                          f"Distance to fill: {tg.distance_to_fill_pct*100:.2f}%.",
+                "win_rate": bt["win_rate"],
+                "avg_ret":  avg_realised_pct,
+                "n":        sample_n,
+                "edge":     edge,
+                "reason": (
+                    f"Per-ticker validated config: min gap {cfg['min_gap_pct']*100:.2f}%, "
+                    f"dir={cfg['dir']}, weekday={cfg['weekday']}. "
+                    f"1-yr backtest: {bt['n']} trades, {bt['win_rate']:.0f}% win, "
+                    f"PF {bt['pf']:.2f}, ~${bt['pnl_per_1k']:.0f} per $1k notional/yr. "
+                    f"Distance to fill: {tg.distance_to_fill_pct*100:.2f}%."
+                    + (" 💎 PRIME tier (AAPL Thu): PF 19.5 in the slice — best risk-adjusted setup we found."
+                       if is_prime else "")
+                ),
                 "horizon": "Same day (intraday fill)",
             })
             n_kept += 1
-        msg = f"{len(gap_results)}/{4} tickers loaded, {n_in} with gap signals, {n_kept} passed edge gate"
+        dropped_tickers = [t for t, v in GAP_FILL_PER_TICKER.items() if v is None]
+        dropped_str = (", ".join(dropped_tickers) + " permanently dropped (no edge in 1-yr backtest)") if dropped_tickers else "none dropped"
+        msg = (f"{len(gap_results)}/{4} tickers loaded, {n_in} with raw signals, "
+               f"{n_kept} passed per-ticker edge gate · "
+               f"{n_dropped_by_cfg} filtered by config · "
+               f"{dropped_str}")
         if len(gap_results) < 4:
             msg += f" · ⚠ {4 - len(gap_results)} ticker(s) failed to load"
             source_health["Gap Fill"] = {"ok": False, "msg": msg, "n_in": n_in, "n_kept": n_kept}
@@ -829,7 +856,7 @@ if page == "Today's Plays":
         plays.sort(key=lambda p: p["edge"], reverse=True)
 
         # Top counters
-        n_now      = sum(1 for p in plays if p["state"] in ("TOUCHING", "ENTRY_OPEN", "NEAR_FILL"))
+        n_now      = sum(1 for p in plays if p["state"] in ("TOUCHING", "ENTRY_OPEN", "NEAR_FILL", "💎 PRIME"))
         n_watch    = sum(1 for p in plays if p["state"] in ("APPROACHING", "WATCH_FILL"))
         best_edge  = plays[0]["edge"]
         sources    = sorted({p["source"] for p in plays})
@@ -868,11 +895,12 @@ if page == "Today's Plays":
             "NEAR_FILL":   ("#1f6feb", "⚡"),
             "APPROACHING": ("#d29922", "👀"),
             "WATCH_FILL":  ("#d29922", "👀"),
+            "💎 PRIME":    ("#bf3989", "💎"),
         }
         SOURCE_BADGE = {
             "MA Bounce":  ("#6e40c9", "Weekly MA bounce · validated +243% on real options"),
             "ML Jackpot": ("#1f6feb", "ML vol+P&L classifier agreement · same-day 0DTE"),
-            "Gap Fill":   ("#0e8c87", "Gap reversal · historical fill rate ≥X%"),
+            "Gap Fill":   ("#0e8c87", "Gap reversal · per-ticker validated config (1-yr backtest, realised avg %)"),
             "0DTE Drop":  ("#bf3989", "Intraday drop ≥3 pts · drop-band lottery"),
         }
         for i, p in enumerate(plays, 1):

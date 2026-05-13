@@ -33,7 +33,7 @@ Sidebar is grouped into 4 sections:
 **🎯 SIGNAL DETAILS** (drill-downs for the unified list)
 2. **Command Center** — ML jackpot signals for SPY/QQQ/IWM/AAPL with hero verdict card
 3. **MA Bounce Setups** — 22 high-edge weekly MA-touch plays (universe-scanned). Each play card now shows the empirically-validated **High-Conviction Doctrine**: smart-entry limit at MA × 0.995 (5-day validity), conviction add at MA × 0.99 (1.5–2× size), OTM call (~+$5 capped at 2% of underlying, 1-week expiry), hold to expiry, no stop loss. Doctrine validated on 72 signals over 3 months: 35% fill rate, 64% win, +132% avg return, $1,322/fill (3× per-trade efficiency vs the current market-buy/ATM/no-stop algo).
-4. **Gap Reversal** — Gap fill & reversal setups (WATCH_FILL ≥70% fill rate is the strong signal; NEAR_FILL ≥50% is moderate)
+4. **Gap Reversal** — Gap fill & reversal setups, gated by **per-ticker validated config** (`src/gap_per_ticker_config.py`) from a 1-yr walk-forward backtest (`scripts/edge_mine_gap_per_ticker.py`). Edge metric is realised average % per trade, NOT raw fill rate (fill rate without payoff is a vanity stat). Per-ticker rules: **SPY** gap-down only, ≥0.20% (PF 2.75); **QQQ** dropped entirely (best config was $8/yr — noise); **IWM** any direction, ≥0.40% (PF 1.27); **AAPL** any, ≥0.20% (PF 1.83) with a **💎 PRIME** tier on Thursdays (PF 19.5 — best risk-adjusted slice in the entire sweep).
 5. **0DTE Lottery** — 1000%+ options plays & sweet spots
 
 **📊 RESEARCH** (analysis-only, not direct trade signals)
