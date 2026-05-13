@@ -524,10 +524,19 @@ if page == "Today's Plays":
             "Every actionable signal from every validated system, ranked by normalized expected edge")
 
     # ── Doctrine banner: empirically-derived MA Bounce trading rules ─────────
-    with st.expander("💎 High-Conviction Doctrine — what we learned from 3 months of real Polygon options data", expanded=False):
-        st.html("""
-        <div style="background:#0a1428;border-left:3px solid #58a6ff;padding:14px 18px;
-                    border-radius:6px;font-size:13px;line-height:1.6;color:#c9d1d9;">
+    # Use native <details>/<summary> instead of st.expander — Streamlit's expander
+    # chevron uses a Material Symbols font that doesn't load through the proxy,
+    # leaking "_arrow_right_" raw text into the label.
+    st.html("""
+        <details style="background:#0a1428;border-left:3px solid #58a6ff;
+                        border-radius:6px;margin-bottom:10px;">
+          <summary style="cursor:pointer;padding:12px 18px;font-weight:700;
+                          color:#58a6ff;font-size:14px;list-style:none;
+                          user-select:none;">
+            💎 High-Conviction Doctrine — what we learned from 3 months of real Polygon options data
+          </summary>
+        <div style="padding:6px 18px 16px 18px;font-size:13px;
+                    line-height:1.6;color:#c9d1d9;">
           <div style="color:#58a6ff;font-weight:800;margin-bottom:8px;font-size:14px;">
             The current algo (market-buy on touch close, ATM, no stop) achieved
             42% win rate / +42% avg / $424 per fill.
@@ -554,6 +563,7 @@ if page == "Today's Plays":
             See <code>mastertrades/scripts/backtest_*.py</code> for the full validation.
           </div>
         </div>
+        </details>
         """)
 
     # ── Helpers: unified normalized edge ─────────────────────────────────────
@@ -783,8 +793,20 @@ if page == "Today's Plays":
             f'<span style="color:#c9d1d9;font-weight:600;">{dot} {name}</span>'
             f'<span style="color:#8b949e;text-align:right;">{h["msg"]}</span></div>'
         )
-    with st.expander(f"📡 Signal source health — {health_label}", expanded=bool(bad_sources)):
-        st.html(f'<div style="border-left:3px solid {health_color};padding-left:12px;">{rows_html}</div>')
+    # Native <details> instead of st.expander to avoid Material-Symbols font leak
+    open_attr = " open" if bad_sources else ""
+    st.html(
+        f'<details{open_attr} style="background:#0d1117;border:1px solid #21262d;'
+        f'border-radius:6px;margin-bottom:14px;">'
+        f'  <summary style="cursor:pointer;padding:10px 14px;font-weight:600;'
+        f'color:#c9d1d9;font-size:13px;list-style:none;user-select:none;">'
+        f'    📡 Signal source health — {health_label}'
+        f'  </summary>'
+        f'  <div style="padding:6px 14px 12px 14px;">'
+        f'    <div style="border-left:3px solid {health_color};padding-left:12px;">{rows_html}</div>'
+        f'  </div>'
+        f'</details>'
+    )
 
     # ── Render ───────────────────────────────────────────────────────────────
     if not plays:
