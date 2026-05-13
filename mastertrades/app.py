@@ -502,6 +502,69 @@ if page == "Command Center":
         st.warning("No scan results yet. Try refreshing.")
         st.stop()
 
+    # ── Market phase — computed once, used throughout this page ───────────────
+    from src.jackpot_scanner import market_phase as _market_phase
+    _ph = _market_phase()
+    _ph_p = _ph["phase"]
+
+    _noi = _ph.get("next_open_in") or 0   # minutes until next open (None when open)
+    _mso = _ph.get("minutes_since_open") or 0  # minutes since open (None pre-open)
+    _ph_banner_cfg = {
+        "PRE_OPEN": (
+            "#d29922", "#1c1600", "#2a1e00",
+            "🟡 PRE-MARKET — Signal Preview",
+            (f"Cash market opens in {_noi//60}h {_noi%60}m (9:30 AM ET). "
+             f"Signal is 95% ready — only the opening gap is still missing. "
+             f"<strong style='color:#ffd633;'>Wait for 9:50 AM ET before trading.</strong>"),
+        ),
+        "OPEN_PENDING_DATA": (
+            "#d29922", "#1c1600", "#2a1e00",
+            "🟡 OPEN · DATA SETTLING (9:30–9:50 AM ET)",
+            (f"Market opened {_mso} min ago. "
+             f"Yahoo's daily bar takes ~15–20 min to reflect the opening print. "
+             f"<strong style='color:#ffd633;'>Signal may still be from yesterday — "
+             f"refresh at 9:50 AM ET for the confirmed read.</strong>"),
+        ),
+        "OPEN_LIVE": (
+            "#3fb950", "#0d1f14", "#0a1a0f",
+            "🟢 MARKET OPEN · SIGNAL LIVE",
+            (f"Decision window open · {_mso} min into the session · "
+             f"Signal is final for the day. Closes at 4:00 PM ET."),
+        ),
+        "AFTER_HOURS": (
+            "#58a6ff", "#0a1428", "#0d1f36",
+            "🔵 AFTER-HOURS · SESSION CLOSED",
+            ("Today's trading window ended at 4:00 PM ET. "
+             "All 0DTE options expired worthless at close. "
+             "<strong style='color:#a5d6ff;'>Signal below is today's FINAL result — "
+             "use it as context for tomorrow's plan.</strong>"),
+        ),
+        "WEEKEND": (
+            "#8b949e", "#161b22", "#1c2128",
+            "⚫ WEEKEND · MARKETS CLOSED",
+            ("Markets reopen Monday 9:30 AM ET. "
+             "Signal below is a <strong style='color:#e6edf3;'>preview for Monday</strong>, "
+             "computed from Friday's close — the opening gap will refine it at the bell."),
+        ),
+    }
+    _ph_color, _ph_bg, _ph_border_bg, _ph_title, _ph_sub = _ph_banner_cfg.get(
+        _ph_p, _ph_banner_cfg["AFTER_HOURS"]
+    )
+    st.html(
+        f"""<div style="background:{_ph_bg};border:1px solid {_ph_color};
+                        border-radius:10px;padding:12px 18px;margin-bottom:12px;
+                        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif;
+                        display:flex;align-items:flex-start;gap:10px;">
+          <div style="flex:1;">
+            <div style="font-size:11px;font-weight:800;color:{_ph_color};
+                        text-transform:uppercase;letter-spacing:.09em;margin-bottom:4px;">
+              {_ph_title}</div>
+            <div style="font-size:12px;color:#8b949e;line-height:1.6;">{_ph_sub}</div>
+          </div>
+          <div style="color:#30363d;font-size:10px;white-space:nowrap;padding-top:2px;">
+            {datetime.now().strftime('%H:%M ET')}</div>
+        </div>""")
+
     # ── Hero verdict ──────────────────────────────────────────────────────────
     rank_order = {"GO_ULTRA_JACKPOT": 4, "GO_JACKPOT": 3, "GO_HOT": 2, "SKIP": 1}
     best_row = max(rows, key=lambda r: rank_order.get(r.signal, 0))
@@ -573,7 +636,8 @@ if page == "Command Center":
         day_high  = snap.get("day_high") or 0.0
         day_low   = snap.get("day_low")  or 0.0
         day_vwap  = snap.get("day_vwap") or 0.0
-        s_label   = snap.get("status_label", "")
+        # Only show LIVE badge when cash market is actually open
+        s_label   = snap.get("status_label", "") if _ph["is_open"] else ""
         rsi_v     = getattr(row, "rsi14", None)
 
         price_str = fmt_dollar(price)
@@ -660,7 +724,36 @@ if page == "Command Center":
     a_recs     = alert["recs"]
     a_hist_pct = alert["hist_pct_1000plus"]
 
-    if a_status == "ENTRY_OPEN":
+    # Override 0DTE display when the cash session is closed.
+    # All 0DTE options expire at 4 PM ET — there is nothing actionable after close.
+    if not _ph["is_open"]:
+        a_status = "SESSION_CLOSED"
+
+    if a_status == "SESSION_CLOSED":
+        _next_open_label = (
+            "Monday 9:30 AM ET" if _ph_p == "WEEKEND"
+            else "9:50 AM ET" if _ph_p in ("PRE_OPEN", "OPEN_PENDING_DATA")
+            else "next session"
+        )
+        alert_border = "#30363d"
+        alert_bg     = "#0d1117"
+        if _ph_p in ("PRE_OPEN", "OPEN_PENDING_DATA", "WEEKEND"):
+            alert_title = "🔒 0DTE NOT YET ACTIVE — Awaiting Market Open"
+            alert_sub   = (
+                f"No 0DTE session has started yet today. "
+                f"The entry alert will activate once the cash market opens and SPY data flows in. "
+                f"Check back at {_next_open_label}."
+            )
+        else:  # AFTER_HOURS
+            alert_title = "🔒 0DTE SESSION CLOSED — All Options Expired at 4:00 PM ET"
+            alert_sub   = (
+                f"Today's cash session ended at 4:00 PM ET. 0DTE contracts are now worthless. "
+                + (f"Session review: Open ${a_open:.2f} · Low ${a_low:.2f} · "
+                   f"Drop {a_drop:.1f} pts · High ${a_high:.2f}. "
+                   if a_open > 0 else "")
+                + f"Next entry window opens tomorrow at 9:30 AM ET."
+            )
+    elif a_status == "ENTRY_OPEN":
         alert_border = "#ffd633"
         alert_bg     = "linear-gradient(135deg,#1a1208,#131008)"
         alert_title  = "🎯 0DTE ENTRY WINDOW OPEN — SPY REVERSAL SETUP ACTIVE"
@@ -763,6 +856,14 @@ if page == "Command Center":
           <div style="margin-top:10px;color:#8b949e;font-size:11px;
                       line-height:1.6;">{reentry_note}</div>
         </div>"""
+    elif a_status == "SESSION_CLOSED":
+        strike_section_html = f"""
+        <div style="margin-top:12px;padding-top:10px;
+                    border-top:1px solid rgba(255,255,255,0.06);
+                    font-size:11px;color:#8b949e;line-height:1.7;">
+          {"Session stats: Open $" + f"{a_open:.2f}" + " · Low $" + f"{a_low:.2f}" + " · Drop " + f"{a_drop:.1f}" + " pts · High $" + f"{a_high:.2f}" if a_open > 0 else "No intraday data available for this session."}
+          The 0DTE window opens again at the next cash session open.
+        </div>"""
     elif a_status == "APPROACHING":
         pts_needed  = max(0, 3.0 - a_drop)
         strike_level = round(a_low - pts_needed)  # approx strike if drop continues
@@ -835,6 +936,23 @@ if page == "Command Center":
     if trade_rows or hot_rows:
         st.markdown("---")
         section("Kelly Criterion Trade Plan", f"Position sizing for ${equity_input:,.0f} account — risk only what you allocate")
+
+        # Warn user when the trading session is not currently open
+        if not _ph["is_open"]:
+            _session_note = (
+                "Monday 9:30 AM ET" if _ph_p == "WEEKEND"
+                else "9:50 AM ET after the open" if _ph_p in ("PRE_OPEN", "OPEN_PENDING_DATA")
+                else "next session"
+            )
+            st.html(
+                f"""<div style="background:#0a1428;border:1px solid #58a6ff;
+                                border-radius:8px;padding:10px 16px;margin-bottom:12px;
+                                font-size:12px;color:#8b949e;line-height:1.6;">
+                  <strong style="color:#58a6ff;">ℹ️ Session not open.</strong>
+                  These are <strong style="color:#e6edf3;">planning tickets</strong> for when the
+                  market is live. Entry window opens <strong style="color:#a5d6ff;">{_session_note}</strong>.
+                  Do not place 0DTE orders outside cash market hours (9:30–4:00 PM ET).
+                </div>""")
 
         for r in all_signal_rows:
             alloc = recommend_allocation(r.signal, equity_input)
@@ -1082,14 +1200,14 @@ if page == "Command Center":
               </div>
             </div>""")
 
-        # ── Today's intraday opportunity ───────────────────────────────────
+        # ── Today's intraday opportunity (only meaningful during OPEN_LIVE) ──
         live_spy = live_q.get("SPY", {})
         spy_open = live_spy.get("day_open", 0.0)
         spy_low  = live_spy.get("day_low",  0.0)
         spy_high = live_spy.get("day_high", 0.0)
         spy_drop = spy_open - spy_low if spy_open > 0 else 0.0
 
-        if spy_drop >= 2.0:
+        if spy_drop >= 2.0 and _ph["is_open"]:
             opp_color = "#ffd633" if spy_drop >= 4.0 else "#d29922"
             opp_bg    = "#1c1a0a" if spy_drop >= 4.0 else "#1a1208"
             st.html(
@@ -1132,7 +1250,8 @@ if page == "Command Center":
                     </div>
                   </div>
                 </div>""")
-        else:
+        elif _ph["is_open"]:
+            # Only show "quiet" message during live session, not after hours
             st.html(
                 f"""<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
                                 padding:14px 20px;margin-top:12px;color:#8b949e;font-size:12px;
@@ -1313,6 +1432,43 @@ elif page == "Scanner":
             if t.strip()
         ]
 
+    # ── Scanner market phase banner ───────────────────────────────────────────
+    from src.jackpot_scanner import market_phase as _sc_market_phase
+    _sc_ph = _sc_market_phase()
+    _sc_ph_p = _sc_ph["phase"]
+    _sc_ph_cfgs = {
+        "PRE_OPEN":          ("#d29922", "#1c1600", "🟡 PRE-MARKET",
+                              f"Signals are based on yesterday's close. "
+                              f"Opening gap feature locks at 9:30 AM ET — "
+                              f"<strong style='color:#ffd633;'>confirm at 9:50 AM before acting.</strong>"),
+        "OPEN_PENDING_DATA": ("#d29922", "#1c1600", "🟡 OPEN · DATA SETTLING",
+                              "Market opened but data hasn't settled yet (~9:50 AM ET). "
+                              "<strong style='color:#ffd633;'>Scores may still reflect yesterday — refresh shortly.</strong>"),
+        "OPEN_LIVE":         ("#3fb950", "#0d1f14", "🟢 MARKET OPEN · LIVE",
+                              f"Scores are final for today. "
+                              f"{_sc_ph.get('minutes_since_open') or 0} min into session · closes 4:00 PM ET."),
+        "AFTER_HOURS":       ("#58a6ff", "#0a1428", "🔵 AFTER-HOURS · SESSION CLOSED",
+                              "Today's session ended at 4:00 PM ET. "
+                              "Scores below are today's final values — use for tomorrow's planning."),
+        "WEEKEND":           ("#8b949e", "#161b22", "⚫ WEEKEND · CLOSED",
+                              "Markets reopen Monday 9:30 AM ET. "
+                              "Scores are a preview for Monday based on Friday's close."),
+    }
+    _sc_c, _sc_bg, _sc_lbl, _sc_sub = _sc_ph_cfgs.get(_sc_ph_p, _sc_ph_cfgs["AFTER_HOURS"])
+    st.html(
+        f"""<div style="background:{_sc_bg};border:1px solid {_sc_c};
+                        border-radius:10px;padding:11px 16px;margin-bottom:12px;
+                        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif;
+                        display:flex;align-items:flex-start;gap:10px;">
+          <div style="flex:1;">
+            <div style="font-size:11px;font-weight:800;color:{_sc_c};
+                        text-transform:uppercase;letter-spacing:.09em;margin-bottom:3px;">{_sc_lbl}</div>
+            <div style="font-size:12px;color:#8b949e;line-height:1.5;">{_sc_sub}</div>
+          </div>
+          <div style="color:#30363d;font-size:10px;white-space:nowrap;padding-top:2px;">
+            {datetime.now().strftime('%H:%M ET')}</div>
+        </div>""")
+
     with st.spinner(f"Scanning {len(user_tickers)} tickers…"):
         try:
             df, errors = load_scanner(tuple(user_tickers))
@@ -1365,7 +1521,8 @@ elif page == "Scanner":
         day_high   = snap.get("day_high", 0.0)
         day_low    = snap.get("day_low",  0.0)
         day_vwap   = snap.get("day_vwap", 0.0)
-        s_label    = snap.get("status_label", "")
+        # Only show LIVE badge when cash market is actually open
+        s_label    = snap.get("status_label", "") if _sc_ph["is_open"] else ""
 
         lift_txt, lift_c = lift_label(lift)
         chg_c  = "#3fb950" if (live_chg is not None and not math.isnan(float(live_chg)) and float(live_chg) >= 0) else "#f85149"
