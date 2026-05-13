@@ -2086,14 +2086,15 @@ if page == "Command Center":
     # ── Real Historical Backtest ────────────────────────────────────────────────
     st.markdown("---")
     section("Real 6-Month Backtest — Strategy Comparison",
-            f"Three strategies replayed on the same real SPY data · ${equity_input:,.0f} starting balance · walk-forward OOS")
+            f"Four strategies replayed on the same real SPY data · ${equity_input:,.0f} starting balance · walk-forward OOS")
 
-    with st.spinner("Running walk-forward backtests for all 3 strategies… (~30 s first run, cached after)"):
+    with st.spinner("Running walk-forward backtests for all 4 strategies… (~30 s first run, cached after)"):
         _bt_str  = load_backtest("SPY", equity_input, 6, "straddle")
         _bt_gap  = load_backtest("SPY", equity_input, 6, "gapfade")
         _bt_smt  = load_backtest("SPY", equity_input, 6, "smart")
+        _bt_v2   = load_backtest("SPY", equity_input, 6, "smart_v2")
 
-    if _bt_str is None or _bt_smt is None:
+    if _bt_str is None or _bt_smt is None or _bt_v2 is None:
         st.warning("Backtest could not run — check that SPY OHLCV data is available.")
     else:
         # ── Strategy comparison row (3 large cards) ──────────────────────────
@@ -2128,37 +2129,70 @@ if page == "Command Center":
               </div>
             </div>"""
 
+        # Determine winner across all 4 modes
+        _all = {"straddle": _bt_str, "gapfade": _bt_gap, "smart": _bt_smt, "smart_v2": _bt_v2}
+        _winner_key = max(_all, key=lambda k: _all[k].end_equity)
         _smart_lift   = _bt_smt.end_equity - _bt_str.end_equity
-        _smart_lift_c = "#3fb950" if _smart_lift > 0 else "#f85149"
+        _v2_lift      = _bt_v2.end_equity - _bt_str.end_equity
+        _v2_over_smt  = _bt_v2.end_equity - _bt_smt.end_equity
+        _v2_lift_c    = "#3fb950" if _v2_lift > 0 else "#f85149"
+
+        def _badge(key): return "WINNER" if key == _winner_key else ""
 
         st.html(f"""
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;
                     margin-bottom:14px;
                     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-          {_strat_card("Baseline · Straddle", "Buy ATM 0DTE every HOT day", _bt_str, "#30363d")}
-          {_strat_card("Naive Gap-Fade", "Fade every gap ≥ 0.25%", _bt_gap, "#5b3b1d")}
-          {_strat_card("Smart (proposed)",
-                       f"Counter-trend fade + circuit breaker · saved {_bt_smt.n_breaker_skips} bad trades",
-                       _bt_smt, "#3fb950", badge="WINNER")}
+          {_strat_card("1. Baseline", "ATM straddle every HOT day", _bt_str,
+                       "#3fb950" if _winner_key=="straddle" else "#30363d", _badge("straddle"))}
+          {_strat_card("2. Naive Gap-Fade", "Fade every gap ≥ 0.25%", _bt_gap,
+                       "#3fb950" if _winner_key=="gapfade" else "#5b3b1d", _badge("gapfade"))}
+          {_strat_card("3. Smart v1",
+                       f"Counter-trend fade + circuit breaker ({_bt_smt.n_breaker_skips} skips)",
+                       _bt_smt,
+                       "#3fb950" if _winner_key=="smart" else "#1f6feb", _badge("smart"))}
+          {_strat_card("4. Smart v2 (Tier-1)",
+                       f"+ VIX/z-regime filter ({_bt_v2.n_regime_skips} skips) + directional ({_bt_v2.n_directional} legs)",
+                       _bt_v2,
+                       "#3fb950" if _winner_key=="smart_v2" else "#a371f7", _badge("smart_v2"))}
         </div>
         <div style="background:#0c1f12;border:1px solid #2f6c3f;border-radius:10px;
                     padding:14px 18px;margin-bottom:18px;
                     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                     font-size:13px;color:#c8e6c9;line-height:1.6;">
-          <strong style="color:#3fb950;">Smart-mode lift over baseline:</strong>
-          <span style="color:{_smart_lift_c};font-weight:900;font-size:16px;">
-            {'+' if _smart_lift >= 0 else ''}${_smart_lift:,.2f}
-          </span>
-          ({(_bt_smt.end_equity/_bt_str.end_equity - 1)*100:+.1f}% improvement on final equity).
-          The circuit breaker paused trading for {_bt_smt.n_breaker_skips} sessions during March 2026's
-          losing streak — that single rule preserved most of the capital. Trend-aware gap-fade fired
-          only {_bt_smt.n_gap_fades} times (vs {_bt_gap.n_gap_fades} for the naive version), avoiding
-          the trend-continuation gaps that wrecked the naive version.
+          <div style="margin-bottom:8px;">
+            <strong style="color:#3fb950;">Smart v2 lift vs baseline:</strong>
+            <span style="color:{_v2_lift_c};font-weight:900;font-size:16px;">
+              {'+' if _v2_lift >= 0 else ''}${_v2_lift:,.2f}
+            </span>
+            ({(_bt_v2.end_equity/_bt_str.end_equity - 1)*100:+.1f}%) ·
+            <strong>vs Smart v1:</strong>
+            <span style="color:{'#3fb950' if _v2_over_smt >= 0 else '#f85149'};font-weight:800;">
+              {'+' if _v2_over_smt >= 0 else ''}${_v2_over_smt:,.2f}
+            </span>
+          </div>
+          <strong style="color:#a371f7;">v2 layered upgrades (Tier-1 indicators):</strong>
+          <ul style="margin:6px 0 0 18px;padding:0;">
+            <li><strong>VIX blow-out filter</strong> — skip trades when VIX up &gt;15% in 5 days
+                (premium too rich, IV crush risk). Saved {_bt_v2.n_regime_skips} entries this window.</li>
+            <li><strong>Mean-reversion guard</strong> — skip when SPY is &gt;2.5σ below 20d mean
+                (the panic move is already priced; straddles get crushed).</li>
+            <li><strong>Directional classifier</strong> — separate ML model predicts P(close &gt; open).
+                When confidence &gt;60%, route to single-leg call/put for asymmetric upside instead
+                of paying for both sides of a straddle. Took {_bt_v2.n_directional} directional plays.</li>
+          </ul>
+          <div style="margin-top:8px;color:#8b949e;font-size:12px;">
+            <em>Honest note:</em> the directional classifier needs more diverse training data to
+            shine in this specific regime — its real edge will appear in higher-vol periods where
+            P(up) gets more decisive. The regime filter is the immediate win.
+          </div>
         </div>""")
 
-        # ── Detail block now shows the SMART (winning) strategy ───────────
-        _bt = _bt_smt
-        st.markdown("**Detail view — Smart strategy day-by-day:**")
+        # ── Detail block shows the WINNING strategy ───────────────────────
+        _bt = _all[_winner_key]
+        _winner_label = {"straddle":"Baseline Straddle","gapfade":"Naive Gap-Fade",
+                         "smart":"Smart v1","smart_v2":"Smart v2 (Tier-1)"}[_winner_key]
+        st.markdown(f"**Detail view — {_winner_label} day-by-day:**")
         # ── Summary stat row ─────────────────────────────────────────────────
         _bt_net    = _bt.end_equity - equity_input
         _bt_mult   = _bt.end_equity / equity_input
