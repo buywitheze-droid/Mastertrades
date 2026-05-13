@@ -19,7 +19,9 @@ from src.scanner import fetch_or_load_daily
 from src.weekly_levels import compute_weekly_mas, find_touches
 
 
-# Frozen scan results: 24 high-edge setups (n>=5, %pos>=75%, lookback=365d)
+# Frozen scan results: 22 high-edge setups (n>=5, %pos>=75%, lookback=365d)
+# (Originally 24; HYG_30w EMA and XLV_50w SMA dropped 2026-05-13 after real-options
+# backtest showed 30%/29% win rates — historical edge did not replicate.)
 HIGH_EDGE_SETUPS = [
     # ticker, ma_label, n_touches, pct_pos_5d, avg_5d, med_5d, pct_pos_10d, avg_10d, best_5d, worst_5d
     ("AVGO",  "50w EMA",  5, 100.0, 12.21, 13.29, 100.0, 24.38, 18.1,   4.6),
@@ -35,14 +37,18 @@ HIGH_EDGE_SETUPS = [
     ("AMZN",  "30w SMA", 20,  85.0,  4.17,  5.04,  90.0,  4.52, 12.3,  -2.2),
     ("IWM",   "50w EMA", 13,  85.0,  1.46,  1.90,  62.0,  2.63,  5.6,  -3.5),
     ("AMZN",  "50w SMA",  6,  83.0,  2.29,  2.85,  83.0,  4.91,  6.0,  -4.3),
-    ("HYG",   "30w EMA", 24,  83.0,  0.34,  0.33,  77.0,  0.35,  1.1,  -0.6),
+    # HYG 30w EMA: REMOVED 2026-05-13. Historical 83% win rate did NOT replicate.
+    # Real Polygon options backtest (Apr-May 2026): 20 trades, 30% win, -37% avg.
+    # The MA went sideways and price drifted along it instead of bouncing off.
     ("MA",    "30w SMA", 21,  81.0,  1.01,  1.15,  57.0, -0.37,  4.3,  -6.1),
     ("INTC",  "30w SMA", 10,  80.0,  5.02,  5.21,  90.0,  7.01, 16.0,  -5.8),
     ("LLY",   "50w SMA",  5,  80.0,  4.50,  2.82, 100.0,  7.16, 11.5,  -3.2),
     ("AMZN",  "30w EMA", 15,  80.0,  3.49,  2.91,  93.0,  5.44, 12.3,  -1.6),
     ("ORCL",  "30w SMA",  5,  80.0,  3.00,  5.06, 100.0, 18.07,  6.4,  -4.1),
     ("ORCL",  "50w SMA", 10,  80.0,  1.55,  3.06,  40.0, -2.22, 10.2, -14.0),
-    ("XLV",   "50w SMA", 10,  80.0,  0.69,  0.81,  57.0,  1.45,  2.1,  -1.2),
+    # XLV 50w SMA: REMOVED 2026-05-13. Historical 80% win rate did NOT replicate.
+    # Real Polygon options backtest (Apr-May 2026): 7 trades, 29% win, -39% avg.
+    # 3 of the 5 worst losses across the entire universe came from this single setup.
     ("XLE",   "30w EMA", 31,  77.0,  1.33,  1.11,  71.0,  1.61,  6.1,  -1.8),
     ("XOM",   "50w EMA", 13,  77.0,  1.05,  1.36,  54.0,  0.20,  4.8,  -5.1),
     ("ABNB",  "50w SMA", 32,  75.0,  1.85,  2.57,  66.0,  1.80, 10.2,  -9.7),

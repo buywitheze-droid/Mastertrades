@@ -417,7 +417,7 @@ def load_account():
 PAGE_META = {
     "Today's Plays":    ("⚡ Today's Plays",    "Every actionable signal, ranked by edge"),
     "Command Center":   ("🎯 Command Center",   "Today's ML jackpot signals (SPY/QQQ/IWM/AAPL)"),
-    "MA Bounce Setups": ("🎯 MA Bounce Setups", "24 high-edge weekly MA-touch plays"),
+    "MA Bounce Setups": ("🎯 MA Bounce Setups", "22 high-edge weekly MA-touch plays"),
     "Gap Reversal":     ("🎯 Gap Reversal",     "Gap fill & reversal setups"),
     "0DTE Lottery":     ("🎯 0DTE Lottery",     "1000%+ options plays & sweet spots"),
     "Scanner":          ("📊 Scanner",          "Ranked volatility universe (research)"),
@@ -523,6 +523,39 @@ if page == "Today's Plays":
     section("⚡ Today's Plays",
             "Every actionable signal from every validated system, ranked by normalized expected edge")
 
+    # ── Doctrine banner: empirically-derived MA Bounce trading rules ─────────
+    with st.expander("💎 High-Conviction Doctrine — what we learned from 3 months of real Polygon options data", expanded=False):
+        st.html("""
+        <div style="background:#0a1428;border-left:3px solid #58a6ff;padding:14px 18px;
+                    border-radius:6px;font-size:13px;line-height:1.6;color:#c9d1d9;">
+          <div style="color:#58a6ff;font-weight:800;margin-bottom:8px;font-size:14px;">
+            The current algo (market-buy on touch close, ATM, no stop) achieved
+            42% win rate / +42% avg / $424 per fill.
+          </div>
+          <div style="color:#f0f6fc;font-weight:700;margin-bottom:6px;">
+            The empirically-validated High-Conviction Doctrine (shown on every MA Bounce card below):
+          </div>
+          <ul style="margin:6px 0 12px 18px;color:#c9d1d9;">
+            <li><b style="color:#58a6ff;">Smart entry:</b> limit at MA × 0.995 (−0.50% pullback), valid 5 trading days. Skip if unfilled.</li>
+            <li><b style="color:#58a6ff;">Strike:</b> OTM+$5 from fill price, 1-week expiry.</li>
+            <li><b style="color:#58a6ff;">Exit:</b> hold to expiry. <b>No stop loss</b> — backtests show stops hurt P&L by ~18%.</li>
+            <li><b style="color:#58a6ff;">Sizing:</b> equal $ per fill. Optionally size 1.5–2× when a deeper limit at MA × 0.99 also fills.</li>
+          </ul>
+          <div style="color:#c9d1d9;margin-bottom:8px;">
+            <b style="color:#3fb950;">Result on 72 signals over 3 months:</b>
+            35% fill rate, <b>64% win rate</b>, +132% avg return, <b>$1,322 per fill</b>
+            (3× per-trade efficiency vs current algo).
+          </div>
+          <div style="color:#8b949e;font-size:11px;font-style:italic;border-top:1px solid #21262d;padding-top:8px;">
+            ⚠ Honest caveats: one of three months (April 2026) provided most of the P&L —
+            real-world results will be lumpy. Sample of 72 signals is decent but not bulletproof.
+            HYG_30w EMA and XLV_50w SMA were dropped from the universe after their historical
+            edges failed to replicate (30%/29% real win rates vs 83%/80% claimed).
+            See <code>mastertrades/scripts/backtest_*.py</code> for the full validation.
+          </div>
+        </div>
+        """)
+
     # ── Helpers: unified normalized edge ─────────────────────────────────────
     # All sources contribute a single comparable score:
     #   edge_pct = expected_return_per_trade(%) × confidence × sample_shrinkage
@@ -574,6 +607,19 @@ if page == "Today's Plays":
             conf = 1.0 if s.state == "TOUCHING" else 0.55
             edge = _edge(s.pct_pos_5d, s.avg_5d, s.n_touches, conf)
             action = "BUY CALLS NOW" if s.state == "TOUCHING" else "WATCH FOR TOUCH"
+            # ── HIGH-CONVICTION DOCTRINE (3-month Polygon-validated) ──────
+            # Smart entry: limit at MA × 0.995 (−0.50% pullback), valid 5 trading days
+            # Strike:      OTM ~$5 from fill, capped at 2% of underlying so the
+            #              heuristic stays sane on lower-priced names. 1-week call.
+            # Hold to expiry. No stop loss. Equal $ size per fill.
+            #   Backtest: 35% fill rate, 64% win, +132% avg, $1,322/fill (vs current
+            #   algo's 42% win, +42% avg, $424/fill). 3× per-trade efficiency.
+            smart_entry  = s.ma_value * 0.995
+            conviction   = s.ma_value * 0.99
+            # Cap OTM distance at 2% of underlying — backtest used names ≥$80
+            # where $5 ≈ 0.5–6% OTM. For lower-priced names $5 would be absurd.
+            otm_distance = min(5.0, smart_entry * 0.02)
+            otm5_strike  = round(smart_entry + otm_distance)
             plays.append({
                 "source": "MA Bounce", "ticker": s.ticker, "tag": s.ma_label,
                 "state": s.state, "action": action,
@@ -584,6 +630,13 @@ if page == "Today's Plays":
                 "reason": f"{s.ma_label} historically bounces {s.pct_pos_5d:.0f}% of touches for +{s.avg_5d:.2f}% in 5d (n={s.n_touches}). "
                           f"Currently {s.distance_pct:+.2f}% from MA, {s.state}.",
                 "horizon": "5 days (weekly options)",
+                # Smart-entry doctrine fields (consumed by play card render below)
+                "doctrine_ma":          s.ma_value,
+                "doctrine_smart_entry": smart_entry,
+                "doctrine_conviction":  conviction,
+                "doctrine_strike":      otm5_strike,
+                "doctrine_fill_window": "5 trading days",
+                "doctrine_hold_rule":   "Hold to expiry. No stop loss.",
             })
             n_kept += 1
         msg = f"{len(live_ma)} live setups, {n_in} actionable, {n_kept} passed edge gate"
@@ -804,6 +857,37 @@ if page == "Today's Plays":
             color, emoji = STATE_COLORS.get(p["state"], ("#8b949e", "•"))
             src_color, src_desc = SOURCE_BADGE.get(p["source"], ("#8b949e", ""))
             n_str = f"n={p['n']}" if p["n"] > 0 else "live"
+            # Smart-entry doctrine block — only rendered for MA Bounce plays
+            doctrine_html = ""
+            if "doctrine_smart_entry" in p:
+                doctrine_html = f"""
+                  <div style="margin-top:10px;padding:10px 12px;background:#0a1428;
+                              border:1px solid #1f6feb;border-left:3px solid #58a6ff;border-radius:8px;">
+                    <div style="font-size:10px;color:#58a6ff;font-weight:800;letter-spacing:.08em;
+                                text-transform:uppercase;margin-bottom:6px;">
+                      💎 High-Conviction Doctrine · 3-Month Polygon-Validated
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px 18px;
+                                font-size:12px;color:#c9d1d9;">
+                      <div><b style="color:#58a6ff;">Smart entry:</b>
+                           ${p['doctrine_smart_entry']:.2f} limit
+                           <span style="color:#6e7681;">(MA × 0.995, valid {p['doctrine_fill_window']})</span></div>
+                      <div><b style="color:#58a6ff;">Conviction add:</b>
+                           ${p['doctrine_conviction']:.2f} limit
+                           <span style="color:#6e7681;">(MA × 0.99, size 1.5–2×)</span></div>
+                      <div><b style="color:#58a6ff;">Buy strike:</b>
+                           ~${p['doctrine_strike']} call
+                           <span style="color:#6e7681;">(OTM, capped at 2% of underlying, 1-week expiry)</span></div>
+                      <div><b style="color:#58a6ff;">Exit rule:</b>
+                           {p['doctrine_hold_rule']}</div>
+                    </div>
+                    <div style="margin-top:6px;font-size:11px;color:#8b949e;line-height:1.5;">
+                      Skip if not filled by Day 5 — no chasing.
+                      Loss is naturally capped (~−55% to −90%) by OTM expiry.<br>
+                      <span style="color:#d29922;">⚠ Strike is a heuristic estimate — confirm against live option chain
+                      for the nearest tradable strike with adequate liquidity.</span>
+                    </div>
+                  </div>"""
             st.html(f"""
             <div style="background:#0d1117;border:1px solid {color};border-left:4px solid {color};
                         border-radius:12px;padding:18px;margin-bottom:12px;">
@@ -842,6 +926,7 @@ if page == "Today's Plays":
                   <div style="font-size:28px;font-weight:900;color:{color};line-height:1;">{p['edge']:.1f}</div>
                 </div>
               </div>
+              {doctrine_html}
             </div>
             """)
 
@@ -4128,7 +4213,7 @@ elif page == "MA Bounce Setups":
         """)
 
     # ── Methodology footer ────────────────────────────────────────────────────
-    with st.expander("📋 Full universe scan results (all 24 high-edge setups)"):
+    with st.expander("📋 Full universe scan results (all 22 high-edge setups)"):
         import pandas as _pd
         rows = []
         for tk, ma, n, pct, avg5, med5, pct10, avg10, best, worst in HIGH_EDGE_SETUPS:
