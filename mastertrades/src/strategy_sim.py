@@ -197,6 +197,59 @@ def directional_return(
     return float(max(raw - cost_pct, -1.0))
 
 
+def directional_return_with_scaleout(
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    direction: int,                       # +1 = bought a CALL, -1 = bought a PUT
+    premium_pct: float = 0.006,
+    cost_pct: float = 0.05,
+    scale_at_return: float = 1.0,         # sell scale_fraction when option +100%
+    scale_fraction: float = 0.5,          # sell half at the scale-out trigger
+) -> float:
+    """Single-leg long call/put with intraday partial scale-out.
+
+    Logic:
+      • If the option's intraday peak return >= scale_at_return:
+          scale_fraction is sold at the trigger price (locked at +scale_at_return).
+          The remaining (1 - scale_fraction) is held to close.
+          Total return = scale_fraction * scale_at_return + (1-scale_fraction) * close_return.
+      • If the option never touches the trigger:
+          full position held to close (same as directional_return without the
+          0.5x favorable-excursion bonus, since we missed the touch).
+
+    Premium decay on the held half is fully realized — this is empirically what
+    "scale half at +100%" actually does, not a guaranteed-profit fantasy.
+    """
+    if direction not in (1, -1):
+        return 0.0
+    premium = open_ * premium_pct
+    if premium <= 0:
+        return -1.0
+
+    # Intraday peak intrinsic value (as % of spot)
+    if direction == 1:
+        peak_intrinsic = max(high - open_, 0.0)
+        close_intrinsic = max(close - open_, 0.0)
+    else:
+        peak_intrinsic = max(open_ - low, 0.0)
+        close_intrinsic = max(open_ - close, 0.0)
+
+    peak_return = (peak_intrinsic - premium) / premium
+    close_return = (close_intrinsic - premium) / premium
+
+    if peak_return >= scale_at_return:
+        # Scale-out triggered: half locked, half held
+        held_return = close_return
+        blended = scale_fraction * scale_at_return + (1 - scale_fraction) * held_return
+    else:
+        # Never reached trigger — held to close
+        blended = close_return
+
+    return float(max(blended - cost_pct, -1.0))
+
+
 # ---------------------------------------------------------------------------
 # Per-day signal -> trade returns
 # ---------------------------------------------------------------------------

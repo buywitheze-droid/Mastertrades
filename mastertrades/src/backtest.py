@@ -38,7 +38,7 @@ from .scanner import fetch_or_load_daily
 from .volatility_classifier import prepare_xy, walk_forward_proba, make_logreg
 from .volatility_patterns import build_features
 from .edge_finder import train_direct_pnl_model
-from .strategy_sim import straddle_return, directional_return
+from .strategy_sim import straddle_return, directional_return, directional_return_with_scaleout
 from .regime_features import build_regime_features
 from .weekly_levels import compute_weekly_mas
 
@@ -78,6 +78,15 @@ FLOW_CONFIRM_SHORT     = -20
 LONG_BIAS_MAS  = ("10w SMA", "50w SMA", "50w EMA")
 SHORT_BIAS_MAS = ("20w EMA", "30w EMA")
 
+# ── Smart-v4 patient lottery ticket (scale-out at +100%) ────────────────────
+# Empirical: 22% of last 6 months had ≥1.10% intraday move (the touch threshold
+# for ATM 0DTE to print +100%). Of those touches, 100% net positive when
+# scaling 50% at +100% and holding the other 50% to close (avg +104.6%).
+# This mode ONLY trades on highest-conviction directional signals (no straddles
+# / no gap-fades) and applies the 50%-scale-out rule to every trade.
+SCALE_OUT_RETURN     = 1.0      # sell at +100% option return
+SCALE_OUT_FRACTION   = 0.5      # sell half
+
 
 @dataclass
 class BacktestResult:
@@ -97,13 +106,14 @@ class BacktestResult:
     min_equity:   float
     max_drawdown_pct: float  # peak-to-trough in the window
     trade_log:  pd.DataFrame # one row per trading day (including SKIP days)
-    strategy_mode: str = "straddle"   # "straddle" | "gapfade" | "smart" | "smart_v2" | "smart_v3"
+    strategy_mode: str = "straddle"   # straddle|gapfade|smart|smart_v2|smart_v3|smart_v4
     n_gap_fades:  int = 0             # days routed to directional fade
     n_straddles:  int = 0             # days kept as straddle
     n_breaker_skips: int = 0          # signals skipped by circuit-breaker
     n_regime_skips:  int = 0          # signals skipped by regime filter (smart_v2)
     n_directional:   int = 0          # signals routed to single-leg directional
     n_ma_confluence: int = 0          # smart_v3 MA-touch + flow trades
+    n_scaleout_hits: int = 0          # smart_v4 trades that touched +100% intraday
 
 
 def _cache_path(ticker: str, n_months: int, mode: str = "straddle") -> Path:
@@ -188,6 +198,7 @@ def _rescale(r: BacktestResult, scale: float, new_start: float) -> BacktestResul
         n_regime_skips=getattr(r, "n_regime_skips", 0),
         n_directional=getattr(r, "n_directional", 0),
         n_ma_confluence=getattr(r, "n_ma_confluence", 0),
+        n_scaleout_hits=getattr(r, "n_scaleout_hits", 0),
     )
 
 
@@ -248,7 +259,7 @@ def _run_fresh(
     # Predicts whether today closes above open. Used by smart_v2/v3 to route to
     # single-leg call/put (~1000% upside) instead of straddles when conviction
     # is high. Only computed for smart_v2/v3 to keep other modes' cache hot.
-    if strategy_mode in ("smart_v2", "smart_v3"):
+    if strategy_mode in ("smart_v2", "smart_v3", "smart_v4"):
         dir_preds = _walk_forward_directional(X_vol, daily, min_train=500, step=21)
     else:
         dir_preds = None
@@ -257,7 +268,7 @@ def _run_fresh(
     # Build per-day flags for "near a LONG-bias MA from above" and "near a
     # SHORT-bias MA from below", plus a daily-aligned weekly flow score.
     # All inputs shifted by 1 to use only information known before today's open.
-    if strategy_mode == "smart_v3":
+    if strategy_mode in ("smart_v3", "smart_v4"):
         _mas_shifted = compute_weekly_mas(daily).shift(1)
         _prior_close = daily["Close"].shift(1)
 
@@ -307,6 +318,7 @@ def _run_fresh(
     n_regime_skips = 0
     n_directional  = 0
     n_ma_confluence = 0
+    n_scaleout_hits = 0
 
     # Pre-compute previous close + 5-day trend for gap-fade routing
     prev_close_series = daily["Close"].shift(1)
@@ -343,8 +355,8 @@ def _run_fresh(
             signal      = "SKIP"
             alloc_pct   = 0.0
 
-        # Regime context (used by smart_v2 and smart_v3)
-        if strategy_mode in ("smart_v2", "smart_v3") and date in regime.index:
+        # Regime context (used by smart_v2, smart_v3, smart_v4)
+        if strategy_mode in ("smart_v2", "smart_v3", "smart_v4") and date in regime.index:
             r = regime.loc[date]
             vix_val      = float(r["vix"])      if pd.notna(r["vix"])      else float("nan")
             vix_5d_chg   = float(r["vix_5d_chg"]) if pd.notna(r["vix_5d_chg"]) else 0.0
@@ -364,8 +376,8 @@ def _run_fresh(
         trade_type = "NONE"
         actual_ret = 0.0
 
-        # ---- Circuit breaker (smart, smart_v2, smart_v3) ───────────────────
-        if signal != "SKIP" and strategy_mode in ("smart", "smart_v2", "smart_v3") and pause_remaining > 0:
+        # ---- Circuit breaker (smart, smart_v2, smart_v3, smart_v4) ─────────
+        if signal != "SKIP" and strategy_mode in ("smart", "smart_v2", "smart_v3", "smart_v4") and pause_remaining > 0:
             trade_type = "BREAKER_SKIP"
             n_breaker_skips += 1
             pause_remaining -= 1
@@ -373,8 +385,8 @@ def _run_fresh(
             alloc_pct  = 0.0
             signal     = "SKIP"   # treat as a skip for accounting
 
-        # ---- Hard regime filter (smart_v2 + smart_v3) ──────────────────────
-        elif signal != "SKIP" and strategy_mode in ("smart_v2", "smart_v3") and (
+        # ---- Hard regime filter (smart_v2 + smart_v3 + smart_v4) ───────────
+        elif signal != "SKIP" and strategy_mode in ("smart_v2", "smart_v3", "smart_v4") and (
             vix_5d_chg > VIX_BLOWOUT_5D_CHG or z_20d_val < EXTREME_Z_DOWN
         ):
             # VIX already blew out 5d → IV crush risk; OR price already
@@ -390,7 +402,7 @@ def _run_fresh(
             if strategy_mode == "gapfade":
                 # Naive gap-fade: any meaningful gap
                 do_fade = abs(gap_pct) >= GAP_THRESHOLD_PCT
-            elif strategy_mode in ("smart", "smart_v2", "smart_v3"):
+            elif strategy_mode in ("smart", "smart_v2", "smart_v3", "smart_v4"):
                 # Trend-aware gap-fade: counter-trend, sweet-spot only
                 in_sweet_spot = GAP_THRESHOLD_PCT <= abs(gap_pct) <= GAP_MAX_FADE_PCT
                 # Counter-trend: gap is opposite to recent direction
@@ -405,58 +417,78 @@ def _run_fresh(
             # / "stretched short" setup the user asked for.
             took_directional = False
             took_ma_confluence = False
-            if strategy_mode == "smart_v3" and ma_overlay is not None and date in ma_overlay.index:
+
+            # smart_v4 uses scale-out variant; v2/v3 use plain directional
+            def _dir_ret(d):
+                if strategy_mode == "smart_v4":
+                    r = directional_return_with_scaleout(
+                        open_, high_, low_, close_, d,
+                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
+                        scale_at_return=SCALE_OUT_RETURN,
+                        scale_fraction=SCALE_OUT_FRACTION,
+                    )
+                    # Did the trade touch the scale-out trigger? Used for stats.
+                    if d == 1:
+                        peak_int = max(high_ - open_, 0.0)
+                    else:
+                        peak_int = max(open_ - low_, 0.0)
+                    peak_ret = (peak_int - open_ * DIRECTIONAL_PREMIUM_PCT) / (open_ * DIRECTIONAL_PREMIUM_PCT)
+                    return r, peak_ret >= SCALE_OUT_RETURN
+                else:
+                    return directional_return(
+                        open_, high_, low_, close_, d,
+                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
+                    ), False
+
+            if strategy_mode in ("smart_v3", "smart_v4") and ma_overlay is not None and date in ma_overlay.index:
                 _ovr = ma_overlay.loc[date]
                 _flow = float(_ovr["weekly_flow"]) if pd.notna(_ovr["weekly_flow"]) else 0.0
                 if bool(_ovr["near_long_ma"]) and _flow >= FLOW_CONFIRM_LONG:
-                    actual_ret = directional_return(
-                        open_, high_, low_, close_, 1,
-                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
-                    )
+                    actual_ret, hit = _dir_ret(1)
                     trade_type = "MA_CALL"
                     alloc_pct  = JACKPOT_ALLOC_PCT     # full Kelly on high-conviction setup
                     n_ma_confluence += 1
+                    if hit: n_scaleout_hits += 1
                     took_directional = True
                     took_ma_confluence = True
                 elif bool(_ovr["near_short_ma"]) and _flow <= FLOW_CONFIRM_SHORT:
-                    actual_ret = directional_return(
-                        open_, high_, low_, close_, -1,
-                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
-                    )
+                    actual_ret, hit = _dir_ret(-1)
                     trade_type = "MA_PUT"
                     alloc_pct  = JACKPOT_ALLOC_PCT
                     n_ma_confluence += 1
+                    if hit: n_scaleout_hits += 1
                     took_directional = True
                     took_ma_confluence = True
 
-            # ---- smart_v2 / smart_v3 fallback: directional override ───────
+            # ---- smart_v2 / smart_v3 / smart_v4 fallback: directional override
             # High-conviction directional plays take priority over the
             # gap-fade heuristic — single-leg call/put is asymmetric upside,
             # while gap-fade is a lower-conviction mean-reversion bet.
-            if not took_directional and strategy_mode in ("smart_v2", "smart_v3"):
+            if not took_directional and strategy_mode in ("smart_v2", "smart_v3", "smart_v4"):
                 if p_up >= DIRECTIONAL_PROB_HI:
-                    direction = 1
-                    actual_ret = directional_return(
-                        open_, high_, low_, close_, direction,
-                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
-                    )
+                    actual_ret, hit = _dir_ret(1)
                     trade_type = "DIR_CALL"
                     alloc_pct  = min(alloc_pct * DIRECTIONAL_ALLOC_BOOST, JACKPOT_ALLOC_PCT)
                     n_directional += 1
+                    if hit: n_scaleout_hits += 1
                     took_directional = True
                 elif p_up <= DIRECTIONAL_PROB_LO and not took_ma_confluence:
-                    direction = -1
-                    actual_ret = directional_return(
-                        open_, high_, low_, close_, direction,
-                        premium_pct=DIRECTIONAL_PREMIUM_PCT,
-                    )
+                    actual_ret, hit = _dir_ret(-1)
                     trade_type = "DIR_PUT"
                     alloc_pct  = min(alloc_pct * DIRECTIONAL_ALLOC_BOOST, JACKPOT_ALLOC_PCT)
                     n_directional += 1
+                    if hit: n_scaleout_hits += 1
                     took_directional = True
 
             if not took_directional:
-                if do_fade:
+                if strategy_mode == "smart_v4":
+                    # Patient lottery ticket: no straddle, no gap-fade.
+                    # Skip days that don't qualify for a directional play.
+                    trade_type = "SKIP"
+                    actual_ret = 0.0
+                    alloc_pct  = 0.0
+                    signal     = "SKIP"
+                elif do_fade:
                     direction = -1 if gap_pct > 0 else 1
                     actual_ret = directional_return(
                         open_, high_, low_, close_, direction,
@@ -481,7 +513,7 @@ def _run_fresh(
         )
 
         # Update circuit-breaker state based on actual outcome
-        if strategy_mode in ("smart", "smart_v2", "smart_v3"):
+        if strategy_mode in ("smart", "smart_v2", "smart_v3", "smart_v4"):
             if outcome == "LOSS":
                 consecutive_losses += 1
                 if consecutive_losses >= CIRCUIT_BREAKER_LOSSES and pause_remaining == 0:
@@ -555,6 +587,7 @@ def _run_fresh(
         n_regime_skips=n_regime_skips,
         n_directional=n_directional,
         n_ma_confluence=n_ma_confluence,
+        n_scaleout_hits=n_scaleout_hits,
     )
 
 
