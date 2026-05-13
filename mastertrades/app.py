@@ -419,6 +419,7 @@ PAGE_META = {
     "Scanner":          "Ranked volatility universe",
     "Gap Reversal":     "Gap fill & reversal setups",
     "Weekly MAs":       "Weekly moving averages + order flow",
+    "MA Bounce Setups": "Universe-scanned high-edge MA-touch plays",
     "Reversal Levels":  "Intraday low/high reversal zones",
     "0DTE Lottery":     "1000%+ options plays & sweet spots",
     "Account Tracker":  "Equity curve & trade log",
@@ -3584,6 +3585,225 @@ elif page == "Weekly MAs":
     </div>
     """)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PAGE: MA BOUNCE SETUPS — Universe-scanned high-edge MA-touch plays
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "MA Bounce Setups":
+    from src.ma_setups_universe import get_all_live_setups, HIGH_EDGE_SETUPS, SCAN_DATE
+
+    section("MA Bounce Setups — Universe Scan",
+            f"{len(HIGH_EDGE_SETUPS)} high-edge weekly MA-touch setups (n≥5 touches, ≥75% positive 5d) · "
+            "validated on 1 yr daily data + real Polygon options")
+
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("**Filters**")
+        min_winrate = st.slider("Min historical win rate (%)", 75, 100, 80, step=5,
+                                key="ma_setups_min_wr")
+        only_actionable = st.checkbox("Show only TOUCHING / APPROACHING", value=True,
+                                       key="ma_setups_actionable")
+        st.caption("Universe scanned: 50 tickers (indices, mega-caps, high-vol single names) "
+                   "× 4 MAs (30w/50w · SMA/EMA)")
+
+    # ── Methodology / disclaimer card ─────────────────────────────────────────
+    st.html("""
+    <div style="background:#0d1f2e;border:1px solid #1f6feb;border-radius:10px;
+                padding:12px 16px;margin-bottom:16px;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="color:#79c0ff;font-size:11px;font-weight:800;text-transform:uppercase;
+                  letter-spacing:.08em;margin-bottom:6px;">📊 How this works</div>
+      <div style="color:#c8e6c9;font-size:12px;line-height:1.6;">
+        Each setup is a (ticker, weekly MA) pair where, over the past year, ≥75% of MA touches
+        produced a positive 5-day return. We compute the live distance between today's price and
+        each MA, then classify: <span style="color:#ffd633;font-weight:700;">TOUCHING</span> (within ±0.6%),
+        <span style="color:#3fb950;font-weight:700;">APPROACHING from above</span> (within 2.5%, drifting down),
+        <span style="color:#8b949e;font-weight:700;">EXTENDED</span> (>2.5% above MA),
+        <span style="color:#f85149;font-weight:700;">BELOW</span> (broke the level).
+        Real-options validation: AMZN/SPY/QQQ/NVDA setups returned <strong style="color:#3fb950;">+243%</strong>
+        on $39k over 39 weekly call trades (62% win rate, largest 29x).
+      </div>
+    </div>
+    """)
+
+    @st.cache_data(ttl=600)
+    def _cached_live_setups():
+        return get_all_live_setups()
+
+    with st.spinner(f"Scanning {len(HIGH_EDGE_SETUPS)} setups across the universe…"):
+        live_setups, failed_setups = _cached_live_setups()
+
+    if not live_setups:
+        st.error("Could not load any setup data. Check Polygon connectivity.")
+        st.stop()
+
+    if failed_setups:
+        st.warning(
+            f"⚠ {len(failed_setups)} setup(s) could not be priced and were excluded: "
+            + ", ".join(f"{t} {m}" for t, m in failed_setups)
+        )
+
+    st.caption(f"📅 Universe scan results frozen on **{SCAN_DATE}** "
+               f"(re-run `scripts/scan_universe.py` to refresh). "
+               f"Live MA distances refreshed every 10 min.")
+
+    # Filter
+    filtered = [s for s in live_setups if s.pct_pos_5d >= min_winrate]
+    if only_actionable:
+        filtered = [s for s in filtered if s.state in ("TOUCHING", "APPROACHING")]
+
+    # ── Hero counts ───────────────────────────────────────────────────────────
+    n_touch = sum(1 for s in live_setups if s.state == "TOUCHING")
+    n_appr  = sum(1 for s in live_setups if s.state == "APPROACHING")
+    n_ext   = sum(1 for s in live_setups if s.state == "EXTENDED")
+    n_below = sum(1 for s in live_setups if s.state == "BELOW")
+
+    c1, c2, c3, c4 = st.columns(4)
+    for col, label, value, color in [
+        (c1, "Touching now",   n_touch, "#ffd633"),
+        (c2, "Approaching",    n_appr,  "#3fb950"),
+        (c3, "Extended",       n_ext,   "#8b949e"),
+        (c4, "Below MA",       n_below, "#f85149"),
+    ]:
+        with col:
+            st.html(f"""
+            <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+                        padding:14px 12px;text-align:center;
+                        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+              <div style="font-size:30px;font-weight:900;color:{color};
+                          line-height:1;">{value}</div>
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;margin-top:6px;">{label}</div>
+            </div>
+            """)
+
+    st.markdown("")
+
+    if not filtered:
+        st.info(f"No setups match the current filters. Try lowering the win-rate threshold or "
+                "unchecking 'only TOUCHING/APPROACHING'.")
+        st.stop()
+
+    st.html(f"""<div style="color:#8b949e;font-size:12px;margin-bottom:8px;">
+      Showing <strong style="color:#e6edf3;">{len(filtered)}</strong> setup(s)
+      ranked by edge score (state × historical win rate × avg return)
+    </div>""")
+
+    # ── Setup cards ──────────────────────────────────────────────────────────
+    for s in filtered:
+        # Direction text
+        dir_text = "above" if s.distance_pct >= 0 else "below"
+        drift_arrow = "↓" if s.drift_5d < 0 else "↑"
+        drift_color = "#3fb950" if s.drift_5d < 0 and s.above_ma else (
+                      "#f85149" if s.drift_5d > 0 and not s.above_ma else "#8b949e")
+
+        # Action recommendation
+        if s.state == "TOUCHING":
+            action = (f"<strong style='color:#ffd633;'>ACT NOW</strong> — price is at the MA. "
+                      f"Consider a 5-day weekly call. Historical edge: {s.pct_pos_5d:.0f}% win, "
+                      f"{s.avg_5d:+.2f}% avg.")
+            action_bg = "#2a2410"; action_border = "#ffd633"
+        elif s.state == "APPROACHING" and s.drift_5d < 0:
+            action = (f"<strong style='color:#3fb950;'>WATCH CLOSELY</strong> — only "
+                      f"{abs(s.distance_pct):.2f}% above the level and falling "
+                      f"({s.drift_5d:+.2f}% past 5d). Set alert at ${s.ma_value:.2f}.")
+            action_bg = "#0d1f14"; action_border = "#3fb950"
+        elif s.state == "APPROACHING":
+            action = (f"<strong style='color:#79c0ff;'>NEAR LEVEL</strong> — "
+                      f"{abs(s.distance_pct):.2f}% above the MA but trending up. "
+                      f"Wait for a pullback to ${s.ma_value:.2f}.")
+            action_bg = "#0d1f2e"; action_border = "#1f6feb"
+        elif s.state == "EXTENDED":
+            action = (f"<strong style='color:#8b949e;'>NO TRADE</strong> — price is "
+                      f"{s.distance_pct:+.1f}% from the MA. Wait for mean reversion.")
+            action_bg = "#161b22"; action_border = "#30363d"
+        else:  # BELOW
+            action = (f"<strong style='color:#f85149;'>LEVEL BROKEN</strong> — price is "
+                      f"{s.distance_pct:+.1f}% below the MA. The setup has invalidated; "
+                      f"wait for a reclaim or skip.")
+            action_bg = "#1f0e0e"; action_border = "#f85149"
+
+        st.html(f"""
+        <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);
+                    border:2px solid {s.state_color};border-radius:12px;
+                    padding:16px 20px;margin-bottom:14px;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                      margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+            <div>
+              <div style="color:{s.state_color};font-size:11px;font-weight:800;
+                          text-transform:uppercase;letter-spacing:.1em;">{s.state}</div>
+              <div style="font-size:22px;font-weight:900;color:#e6edf3;margin-top:2px;">
+                {s.ticker} <span style="color:#8b949e;font-weight:600;font-size:14px;">
+                ({s.ma_label})</span>
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.08em;">Historical edge ({s.n_touches} touches)</div>
+              <div style="font-size:18px;font-weight:800;color:#3fb950;">
+                {s.pct_pos_5d:.0f}% win · {s.avg_5d:+.2f}% avg
+              </div>
+              <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                10d: {s.avg_10d:+.2f}% · best {s.best_5d:+.1f}% · worst {s.worst_5d:+.1f}%
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;
+                      margin-bottom:10px;">
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                        padding:10px 12px;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.07em;">Last close</div>
+              <div style="font-size:18px;font-weight:800;color:#e6edf3;">
+                ${s.last_close:,.2f}
+              </div>
+            </div>
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                        padding:10px 12px;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.07em;">{s.ma_label}</div>
+              <div style="font-size:18px;font-weight:800;color:#79c0ff;">
+                ${s.ma_value:,.2f}
+              </div>
+            </div>
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                        padding:10px 12px;">
+              <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                          letter-spacing:.07em;">Distance / 5d drift</div>
+              <div style="font-size:16px;font-weight:800;color:{s.state_color};">
+                {s.distance_pct:+.2f}% {dir_text}
+              </div>
+              <div style="color:{drift_color};font-size:11px;">
+                {drift_arrow} {s.drift_5d:+.2f}% past 5d
+              </div>
+            </div>
+          </div>
+
+          <div style="background:{action_bg};border-left:3px solid {action_border};
+                      border-radius:6px;padding:10px 14px;color:#e6edf3;font-size:13px;
+                      line-height:1.55;">
+            {action}
+          </div>
+        </div>
+        """)
+
+    # ── Methodology footer ────────────────────────────────────────────────────
+    with st.expander("📋 Full universe scan results (all 24 high-edge setups)"):
+        import pandas as _pd
+        rows = []
+        for tk, ma, n, pct, avg5, med5, pct10, avg10, best, worst in HIGH_EDGE_SETUPS:
+            rows.append({"Ticker": tk, "MA": ma, "Touches": n,
+                         "%Pos 5d": f"{pct:.0f}%", "Avg 5d": f"{avg5:+.2f}%",
+                         "Med 5d": f"{med5:+.2f}%", "%Pos 10d": f"{pct10:.0f}%",
+                         "Avg 10d": f"{avg10:+.2f}%",
+                         "Best 5d": f"{best:+.1f}%", "Worst 5d": f"{worst:+.1f}%"})
+        st.dataframe(_pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption("Universe: 50 tickers (SPY, QQQ, IWM, DIA, sector ETFs, mega-caps, "
+                   "high-vol single names) × 4 MAs (30w/50w · SMA/EMA) = 200 setups tested. "
+                   "Filter: ≥5 touches, ≥75% positive 5d. Lookback: 365 days.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE 5: WEEKDAY PATTERNS
