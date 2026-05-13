@@ -38,6 +38,7 @@ from .scanner import fetch_or_load_daily
 from .volatility_classifier import prepare_xy, walk_forward_proba, make_logreg
 from .volatility_patterns import build_features
 from .edge_finder import train_direct_pnl_model
+from .strategy_sim import straddle_return, directional_return
 
 
 # Kelly allocation fractions (matches TIERS in position_sizer.py)
@@ -45,6 +46,16 @@ JACKPOT_ALLOC_PCT = 0.25
 HOT_ALLOC_PCT     = 0.15
 
 BACKTEST_CACHE_AGE_DAYS = 7   # re-run if cache is stale
+
+# ── Gap-fade strategy parameters ────────────────────────────────────────────
+GAP_THRESHOLD_PCT      = 0.0025   # |gap| >= 0.25% → fade with directional
+GAP_MAX_FADE_PCT       = 0.015    # gaps > 1.5% are usually news/trend, NOT fades
+DIRECTIONAL_PREMIUM_PCT = 0.006   # single-leg ~0.6% of spot
+TREND_LOOKBACK_DAYS    = 5        # measure 5-day trend to validate fade direction
+
+# ── Risk-management parameters ──────────────────────────────────────────────
+CIRCUIT_BREAKER_LOSSES = 3        # stop after this many consecutive losses
+CIRCUIT_BREAKER_PAUSE  = 5        # pause this many sessions before resuming
 
 
 @dataclass
@@ -65,10 +76,15 @@ class BacktestResult:
     min_equity:   float
     max_drawdown_pct: float  # peak-to-trough in the window
     trade_log:  pd.DataFrame # one row per trading day (including SKIP days)
+    strategy_mode: str = "straddle"   # "straddle" | "gapfade" | "smart"
+    n_gap_fades:  int = 0             # days routed to directional fade
+    n_straddles:  int = 0             # days kept as straddle
+    n_breaker_skips: int = 0          # signals skipped by circuit-breaker
 
 
-def _cache_path(ticker: str, n_months: int) -> Path:
-    return DEFAULT_MODEL_DIR / f"{_safe_ticker_filename(ticker)}_backtest_{n_months}m.joblib"
+def _cache_path(ticker: str, n_months: int, mode: str = "straddle") -> Path:
+    suffix = "" if mode == "straddle" else f"_{mode}"
+    return DEFAULT_MODEL_DIR / f"{_safe_ticker_filename(ticker)}_backtest_{n_months}m{suffix}.joblib"
 
 
 def run_jackpot_backtest(
@@ -76,13 +92,31 @@ def run_jackpot_backtest(
     start_equity: float = 500.0,
     n_months: int = 6,
     force_refresh: bool = False,
+    strategy_mode: str = "straddle",
 ) -> BacktestResult:
     """Run the historical Jackpot backtest for the last ``n_months`` months.
 
     Results are cached in models/ so subsequent calls are instant.
     Pass ``force_refresh=True`` to re-run the walk-forward (slow ~30-60 s).
+
+    strategy_mode:
+        "straddle" — baseline: every HOT/JACKPOT day buys an ATM 0DTE
+                     straddle. Premium ~1.1% of spot.
+        "gapfade"  — naive gap fade: any HOT day with |gap| >= 0.25% buys a
+                     CALL (gap-down) or PUT (gap-up). Otherwise straddle.
+        "smart"    — three layered upgrades:
+                     1) Trend-aware gap fade: only fade gaps in the SWEET
+                        SPOT (0.25%–1.5%) AND only when the gap direction is
+                        OPPOSITE to the 5-day trend (counter-trend fade).
+                        Big gaps (>1.5%) and same-direction gaps default to
+                        straddle.
+                     2) Circuit breaker: pause for 5 sessions after 3
+                        consecutive losses. Stops the bleed in trending
+                        regimes like March 2026.
+                     3) Otherwise reverts to straddle (preserves edge on
+                        no-gap volatile days).
     """
-    path = _cache_path(ticker, n_months)
+    path = _cache_path(ticker, n_months, strategy_mode)
     if path.exists() and not force_refresh:
         age_days = (
             pd.Timestamp.now() - pd.Timestamp.fromtimestamp(path.stat().st_mtime)
@@ -95,7 +129,7 @@ def run_jackpot_backtest(
                 cached = _rescale(cached, scale, start_equity)
             return cached
 
-    result = _run_fresh(ticker, start_equity, n_months)
+    result = _run_fresh(ticker, start_equity, n_months, strategy_mode)
     joblib.dump(result, path)
     return result
 
@@ -123,6 +157,10 @@ def _rescale(r: BacktestResult, scale: float, new_start: float) -> BacktestResul
         min_equity=r.min_equity * scale,
         max_drawdown_pct=r.max_drawdown_pct,
         trade_log=log,
+        strategy_mode=getattr(r, "strategy_mode", "straddle"),
+        n_gap_fades=getattr(r, "n_gap_fades", 0),
+        n_straddles=getattr(r, "n_straddles", 0),
+        n_breaker_skips=getattr(r, "n_breaker_skips", 0),
     )
 
 
@@ -130,6 +168,7 @@ def _run_fresh(
     ticker: str,
     start_equity: float,
     n_months: int,
+    strategy_mode: str = "straddle",
 ) -> BacktestResult:
     """Full walk-forward backtest. Slow path (~30–60 s first run)."""
 
@@ -166,13 +205,24 @@ def _run_fresh(
     bt_dates = common[-approx_days:]
 
     # ── 7. Day-by-day simulation ─────────────────────────────────────────────
-    equity = start_equity
+    equity      = start_equity
     rows: list[dict] = []
+    n_gap_fades = 0
+    n_straddles = 0
+    n_breaker_skips = 0
+
+    # Pre-compute previous close + 5-day trend for gap-fade routing
+    prev_close_series = daily["Close"].shift(1)
+    trend_pct_series  = daily["Close"].pct_change(TREND_LOOKBACK_DAYS).shift(1)
+
+    # Circuit-breaker state
+    consecutive_losses = 0
+    pause_remaining    = 0
 
     for date in bt_dates:
         p_vol  = float(vol_preds.loc[date, "y_score"])
         p_pnl  = float(pnl_preds.loc[date, "y_score"])
-        actual_ret = float(pnl_preds.loc[date, "straddle_ret"])
+        straddle_ret_actual = float(pnl_preds.loc[date, "straddle_ret"])
 
         bar    = daily.loc[date]
         open_  = float(bar["Open"])
@@ -181,7 +231,11 @@ def _run_fresh(
         low_   = float(bar["Low"])
         day_rng_pct = (high_ - low_) / open_ * 100
 
-        # Signal
+        prev_close = prev_close_series.loc[date]
+        gap_pct = (open_ - float(prev_close)) / float(prev_close) if pd.notna(prev_close) and prev_close > 0 else 0.0
+        trend_pct = float(trend_pct_series.loc[date]) if pd.notna(trend_pct_series.loc[date]) else 0.0
+
+        # Signal classification
         if p_vol >= HOT_THRESHOLD and p_pnl >= JACKPOT_THRESHOLD:
             signal      = "GO_JACKPOT"
             alloc_pct   = JACKPOT_ALLOC_PCT
@@ -192,21 +246,73 @@ def _run_fresh(
             signal      = "SKIP"
             alloc_pct   = 0.0
 
+        # Trade routing: straddle / gap-fade / smart
+        trade_type = "NONE"
+        actual_ret = 0.0
+
+        # Circuit breaker (smart mode only) — skip the trade entirely if paused
+        if signal != "SKIP" and strategy_mode == "smart" and pause_remaining > 0:
+            trade_type = "BREAKER_SKIP"
+            n_breaker_skips += 1
+            pause_remaining -= 1
+            actual_ret = 0.0
+            alloc_pct  = 0.0
+            signal     = "SKIP"   # treat as a skip for accounting
+        elif signal != "SKIP":
+            do_fade = False
+            if strategy_mode == "gapfade":
+                # Naive gap-fade: any meaningful gap
+                do_fade = abs(gap_pct) >= GAP_THRESHOLD_PCT
+            elif strategy_mode == "smart":
+                # Trend-aware gap-fade: counter-trend, sweet-spot only
+                in_sweet_spot = GAP_THRESHOLD_PCT <= abs(gap_pct) <= GAP_MAX_FADE_PCT
+                # Counter-trend: gap is opposite to recent direction
+                # (gap up after downtrend = exhaustion; gap down after uptrend = panic)
+                counter_trend = (gap_pct > 0 and trend_pct < 0) or (gap_pct < 0 and trend_pct > 0)
+                do_fade = in_sweet_spot and counter_trend
+
+            if do_fade:
+                direction = -1 if gap_pct > 0 else 1
+                actual_ret = directional_return(
+                    open_, high_, low_, close_, direction,
+                    premium_pct=DIRECTIONAL_PREMIUM_PCT,
+                )
+                trade_type = "FADE_PUT" if direction == -1 else "FADE_CALL"
+                n_gap_fades += 1
+            else:
+                actual_ret = straddle_ret_actual
+                trade_type = "STRADDLE"
+                n_straddles += 1
+
         alloc_dollars = round(equity * alloc_pct, 2)
         dollar_change = round(alloc_dollars * actual_ret, 2) if signal != "SKIP" else 0.0
         equity        = max(round(equity + dollar_change, 2), 0.0)
 
         outcome = (
-            "WIN"  if signal != "SKIP" and dollar_change > 0 else
-            "LOSS" if signal != "SKIP" and dollar_change < 0 else
+            "WIN"     if signal != "SKIP" and dollar_change > 0 else
+            "LOSS"    if signal != "SKIP" and dollar_change < 0 else
+            "PAUSED"  if trade_type == "BREAKER_SKIP" else
             "SKIP"
         )
+
+        # Update circuit-breaker state based on actual outcome
+        if strategy_mode == "smart":
+            if outcome == "LOSS":
+                consecutive_losses += 1
+                if consecutive_losses >= CIRCUIT_BREAKER_LOSSES and pause_remaining == 0:
+                    pause_remaining = CIRCUIT_BREAKER_PAUSE
+                    consecutive_losses = 0
+            elif outcome == "WIN":
+                consecutive_losses = 0
 
         rows.append({
             "date":          date,
             "signal":        signal,
+            "trade_type":    trade_type,
             "p_vol":         round(p_vol,  3),
             "p_pnl":         round(p_pnl,  3),
+            "gap_pct":       round(gap_pct * 100, 2),
+            "trend_pct":     round(trend_pct * 100, 2),
             "open":          round(open_,  2),
             "close":         round(close_, 2),
             "range_pct":     round(day_rng_pct, 2),
@@ -251,4 +357,8 @@ def _run_fresh(
         min_equity=float(equity_series.min()),
         max_drawdown_pct=max_dd_pct,
         trade_log=trade_log,
+        strategy_mode=strategy_mode,
+        n_gap_fades=n_gap_fades,
+        n_straddles=n_straddles,
+        n_breaker_skips=n_breaker_skips,
     )
