@@ -415,15 +415,16 @@ def load_account():
 # ─── Sidebar navigation ───────────────────────────────────────────────────────
 
 PAGE_META = {
-    "Command Center":   "Today's trade signals",
-    "Scanner":          "Ranked volatility universe",
-    "Gap Reversal":     "Gap fill & reversal setups",
-    "Weekly MAs":       "Weekly moving averages + order flow",
-    "MA Bounce Setups": "Universe-scanned high-edge MA-touch plays",
-    "Reversal Levels":  "Intraday low/high reversal zones",
-    "0DTE Lottery":     "1000%+ options plays & sweet spots",
-    "Account Tracker":  "Equity curve & trade log",
-    "Weekday Patterns": "Vol by day of week",
+    "Today's Plays":    ("⚡ Today's Plays",    "Every actionable signal, ranked by edge"),
+    "Command Center":   ("🎯 Command Center",   "Today's ML jackpot signals (SPY/QQQ/IWM/AAPL)"),
+    "MA Bounce Setups": ("🎯 MA Bounce Setups", "24 high-edge weekly MA-touch plays"),
+    "Gap Reversal":     ("🎯 Gap Reversal",     "Gap fill & reversal setups"),
+    "0DTE Lottery":     ("🎯 0DTE Lottery",     "1000%+ options plays & sweet spots"),
+    "Scanner":          ("📊 Scanner",          "Ranked volatility universe (research)"),
+    "Weekly MAs":       ("📊 Weekly MAs",       "Per-ticker MA + order flow drill-down"),
+    "Reversal Levels":  ("📊 Reversal Levels",  "Intraday low/high reversal zones"),
+    "Weekday Patterns": ("📊 Weekday Patterns", "Vol by day of week (research)"),
+    "Account Tracker":  ("💰 Account Tracker",  "Equity curve & trade log"),
 }
 
 with st.sidebar:
@@ -433,13 +434,17 @@ with st.sidebar:
            <div style="color:#8b949e;font-size:11px;margin-bottom:16px;">
              0DTE Options Intelligence</div>""")
     st.markdown("---")
+    st.html(
+        """<div style="font-size:10px;font-weight:800;color:#8b949e;
+                       text-transform:uppercase;letter-spacing:.08em;
+                       margin-bottom:6px;">⚡ Trade Now &nbsp;·&nbsp; 🎯 Signal Details &nbsp;·&nbsp; 📊 Research &nbsp;·&nbsp; 💰 Account</div>""")
     page = st.radio(
         "Navigate",
         list(PAGE_META.keys()),
         label_visibility="collapsed",
-        format_func=lambda p: p,
+        format_func=lambda p: PAGE_META[p][0],
     )
-    st.caption(PAGE_META[page])
+    st.caption(PAGE_META[page][1])
     st.markdown("---")
 
     # ── Account equity (always visible) ───────────────────────────────────────
@@ -513,7 +518,339 @@ with st.sidebar:
 #  PAGE 1: COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
 
-if page == "Command Center":
+if page == "Today's Plays":
+    import math
+    section("⚡ Today's Plays",
+            "Every actionable signal from every validated system, ranked by normalized expected edge")
+
+    # ── Helpers: unified normalized edge ─────────────────────────────────────
+    # All sources contribute a single comparable score:
+    #   edge_pct = expected_return_per_trade(%) × confidence × sample_shrinkage
+    # where sample_shrinkage = sqrt(n / (n + PRIOR)) penalises tiny samples,
+    # and expected_return = win_rate × avg_win_return (rough Bernoulli proxy).
+    # Strict gate: avg_ret must be > 0 AND win_rate ≥ 50% AND n ≥ MIN_N.
+    PRIOR_N = 5
+    MIN_N   = 3
+    MIN_WINRATE = 50.0   # %
+
+    def _shrink(n: int) -> float:
+        return math.sqrt(max(n, 0) / (max(n, 0) + PRIOR_N))
+
+    def _edge(win_rate_pct: float, avg_ret_pct: float, n: int, conf: float) -> float:
+        # Expected % return per trade × confidence × sample shrinkage
+        return (win_rate_pct / 100.0) * avg_ret_pct * conf * _shrink(n)
+
+    def _passes_gate(win_rate_pct: float, avg_ret_pct: float, n: int) -> bool:
+        if avg_ret_pct is None or win_rate_pct is None:
+            return False
+        if not (math.isfinite(avg_ret_pct) and math.isfinite(win_rate_pct)):
+            return False
+        if avg_ret_pct <= 0:
+            return False
+        if win_rate_pct < MIN_WINRATE:
+            return False
+        if n < MIN_N:
+            return False
+        return True
+
+    # ── Source-health tracking ───────────────────────────────────────────────
+    plays = []
+    source_health = {}   # name -> {"ok": bool, "msg": str, "n_in": int, "n_kept": int}
+
+    # 1. MA Bounce Setups (TOUCHING + APPROACHING only)
+    try:
+        from src.ma_setups_universe import get_all_live_setups, SCAN_DATE
+        @st.cache_data(ttl=600)
+        def _tp_ma():
+            return get_all_live_setups()
+        live_ma, ma_failed = _tp_ma()
+        n_in = n_kept = 0
+        for s in live_ma:
+            if s.state not in ("TOUCHING", "APPROACHING"):
+                continue
+            n_in += 1
+            if not _passes_gate(s.pct_pos_5d, s.avg_5d, s.n_touches):
+                continue
+            conf = 1.0 if s.state == "TOUCHING" else 0.55
+            edge = _edge(s.pct_pos_5d, s.avg_5d, s.n_touches, conf)
+            action = "BUY CALLS NOW" if s.state == "TOUCHING" else "WATCH FOR TOUCH"
+            plays.append({
+                "source": "MA Bounce", "ticker": s.ticker, "tag": s.ma_label,
+                "state": s.state, "action": action,
+                "entry": s.last_close,
+                "target": s.last_close * (1 + s.avg_5d / 100),
+                "win_rate": s.pct_pos_5d, "avg_ret": s.avg_5d, "n": s.n_touches,
+                "edge": edge,
+                "reason": f"{s.ma_label} historically bounces {s.pct_pos_5d:.0f}% of touches for +{s.avg_5d:.2f}% in 5d (n={s.n_touches}). "
+                          f"Currently {s.distance_pct:+.2f}% from MA, {s.state}.",
+                "horizon": "5 days (weekly options)",
+            })
+            n_kept += 1
+        msg = f"{len(live_ma)} live setups, {n_in} actionable, {n_kept} passed edge gate"
+        if ma_failed:
+            msg += f" · ⚠ {len(ma_failed)} setups failed to price: {', '.join(t+' '+m for t,m in ma_failed[:5])}"
+        source_health["MA Bounce"] = {"ok": True, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+    except Exception as e:
+        source_health["MA Bounce"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
+
+    # 2. ML Jackpot (GO_JACKPOT / GO_ULTRA_JACKPOT)
+    try:
+        jackpot_rows, jerr = load_jackpot_scan()
+        n_in = n_kept = 0
+        for r in jackpot_rows:
+            if r.signal not in ("GO_JACKPOT", "GO_ULTRA_JACKPOT"):
+                continue
+            n_in += 1
+            is_ultra = (r.signal == "GO_ULTRA_JACKPOT")
+            win_rate = (r.ultra_win_rate_history if is_ultra else r.win_rate_history) * 100
+            avg_ret  = (r.ultra_avg_ret_history if is_ultra else r.avg_ret_history) * 100
+            n_hist   = r.n_ultra_history if is_ultra else r.n_jackpot_history
+            if not _passes_gate(win_rate, avg_ret, n_hist):
+                continue   # ← rejects ML signals with non-positive historical edge
+            conf = 1.2 if is_ultra else 1.0
+            edge = _edge(win_rate, avg_ret, n_hist, conf)
+            plays.append({
+                "source": "ML Jackpot", "ticker": r.ticker, "tag": r.signal,
+                "state": "ENTRY_OPEN",
+                "action": "BUY 0DTE STRADDLE" if is_ultra else "BUY 0DTE OPTIONS",
+                "entry": r.last_close,
+                "target": r.last_close * (1 + avg_ret / 100),
+                "win_rate": win_rate, "avg_ret": avg_ret, "n": n_hist,
+                "edge": edge,
+                "reason": f"Both ML models agree: P(volatile)={r.p_vol:.0%}, P(P&L)={r.p_pnl:.0%}. "
+                          f"Historical {r.signal}: {win_rate:.0f}% win @ +{avg_ret:.2f}% avg (n={n_hist}).",
+                "horizon": "Same day (0DTE)",
+            })
+            n_kept += 1
+        msg = f"{len(jackpot_rows)} tickers scanned, {n_in} fired, {n_kept} passed edge gate"
+        if jerr:
+            msg += f" · ⚠ {len(jerr)} ticker errors"
+        source_health["ML Jackpot"] = {"ok": True, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+    except Exception as e:
+        source_health["ML Jackpot"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
+
+    # 3. Gap Reversal — WATCH_FILL is STRONG (≥70% fill rate), NEAR_FILL is moderate (≥50%)
+    try:
+        gap_results = load_cc_gap_verdicts()
+        n_in = n_kept = 0
+        for tkr, tg in gap_results:
+            if tg.signal not in ("WATCH_FILL", "NEAR_FILL"):
+                continue
+            n_in += 1
+            if tg.hist_fill_rate is None or tg.hist_n_similar < MIN_N:
+                continue
+            win_rate = tg.hist_fill_rate * 100
+            avg_ret  = tg.distance_to_fill_pct * 100   # expected % move to fill
+            if not _passes_gate(win_rate, avg_ret, tg.hist_n_similar):
+                continue
+            # WATCH_FILL = high-edge bucket (≥70% fill rate); NEAR_FILL = moderate (≥50%)
+            conf = 1.0 if tg.signal == "WATCH_FILL" else 0.65
+            edge = _edge(win_rate, avg_ret, tg.hist_n_similar, conf)
+            direction = "PUTS (gap up → fill down)" if tg.gap_dir == "up" else "CALLS (gap down → fill up)"
+            plays.append({
+                "source": "Gap Fill", "ticker": tkr,
+                "tag": f"Gap {tg.gap_dir} {tg.gap_pct*100:+.2f}%",
+                "state": tg.signal,
+                "action": f"BUY {direction}",
+                "entry": tg.open_price, "target": tg.fill_level,
+                "win_rate": win_rate, "avg_ret": avg_ret, "n": tg.hist_n_similar,
+                "edge": edge,
+                "reason": f"Similar gaps fill {win_rate:.0f}% of the time (n={tg.hist_n_similar}). "
+                          f"Distance to fill: {tg.distance_to_fill_pct*100:.2f}%.",
+                "horizon": "Same day (intraday fill)",
+            })
+            n_kept += 1
+        msg = f"{len(gap_results)}/{4} tickers loaded, {n_in} with gap signals, {n_kept} passed edge gate"
+        if len(gap_results) < 4:
+            msg += f" · ⚠ {4 - len(gap_results)} ticker(s) failed to load"
+            source_health["Gap Fill"] = {"ok": False, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+        else:
+            source_health["Gap Fill"] = {"ok": True, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+    except Exception as e:
+        source_health["Gap Fill"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
+
+    # 4. 0DTE Lottery (ENTRY_OPEN — drop ≥3 pts from open)
+    try:
+        n_in = n_kept = 0
+        per_ticker_errors = []
+        for tkr in ("SPY", "QQQ", "IWM"):
+            try:
+                alert = load_0dte_alert(tkr)
+            except Exception as e:
+                per_ticker_errors.append(f"{tkr}: {e}")
+                continue
+            if alert.get("status") != "ENTRY_OPEN":
+                continue
+            recs = alert.get("recs", []) or []
+            if not recs:
+                continue
+            n_in += 1
+            top_rec = max(recs, key=lambda r: r.est_gain_pct)
+            hist_pct = float(alert.get("hist_pct_1000plus", 0))
+            avg_ret  = top_rec.est_gain_pct   # already a %
+            # 0DTE has no per-trade sample size; treat hist_pct as a low-confidence
+            # win-rate proxy and apply heavy shrinkage (n=3 effective sample)
+            n_eff = 3
+            if not _passes_gate(hist_pct, avg_ret, n_eff):
+                continue
+            edge = _edge(hist_pct, avg_ret, n_eff, conf=0.7)   # 0.7 = lottery-grade conf
+            plays.append({
+                "source": "0DTE Drop", "ticker": tkr,
+                "tag": f"Drop {alert['drop_pts']:.1f} pts",
+                "state": "ENTRY_OPEN",
+                "action": f"BUY {top_rec.strike}C @ ~${top_rec.est_entry_price:.2f}",
+                "entry": alert["day_low"], "target": alert["day_open"],
+                "win_rate": hist_pct, "avg_ret": avg_ret, "n": n_eff,
+                "edge": edge,
+                "reason": f"Sold off {alert['drop_pts']:.1f} pts from open. "
+                          f"{hist_pct:.0f}% of similar drops produced 1000%+ option moves on recovery to VWAP/open. "
+                          f"⚠ Lottery-grade: small sample, heavy shrinkage applied.",
+                "horizon": "Minutes–hours (0DTE intraday)",
+            })
+            n_kept += 1
+        msg = f"3 tickers polled, {n_in} firing, {n_kept} passed edge gate"
+        if per_ticker_errors:
+            msg += f" · ⚠ errors: {'; '.join(per_ticker_errors)}"
+            source_health["0DTE Drop"] = {"ok": False, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+        else:
+            source_health["0DTE Drop"] = {"ok": True, "msg": msg, "n_in": n_in, "n_kept": n_kept}
+    except Exception as e:
+        source_health["0DTE Drop"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
+
+    # ── Source health banner (always shown) ──────────────────────────────────
+    bad_sources = [name for name, h in source_health.items() if not h["ok"]]
+    health_color = "#d29922" if bad_sources else "#238636"
+    health_label = f"⚠ {len(bad_sources)} source(s) degraded" if bad_sources else "✓ All systems healthy"
+    rows_html = ""
+    for name, h in source_health.items():
+        dot = "🟢" if h["ok"] else "🟡"
+        rows_html += (
+            f'<div style="display:flex;justify-content:space-between;gap:12px;'
+            f'padding:6px 0;border-bottom:1px solid #21262d;font-size:12px;">'
+            f'<span style="color:#c9d1d9;font-weight:600;">{dot} {name}</span>'
+            f'<span style="color:#8b949e;text-align:right;">{h["msg"]}</span></div>'
+        )
+    with st.expander(f"📡 Signal source health — {health_label}", expanded=bool(bad_sources)):
+        st.html(f'<div style="border-left:3px solid {health_color};padding-left:12px;">{rows_html}</div>')
+
+    # ── Render ───────────────────────────────────────────────────────────────
+    if not plays:
+        st.html("""
+        <div style="background:linear-gradient(135deg,#1c2128,#161b22);
+                    border:1px solid #30363d;border-radius:14px;padding:32px;
+                    text-align:center;margin:16px 0;">
+          <div style="font-size:48px;margin-bottom:8px;">😴</div>
+          <div style="font-size:22px;font-weight:800;color:#f0f6fc;
+                      margin-bottom:6px;">No actionable plays right now</div>
+          <div style="color:#8b949e;font-size:14px;line-height:1.5;">
+            Every validated signal source is quiet. No MA touches, no jackpot triggers,
+            no gap-fill setups, no 0DTE drops.<br>
+            <span style="color:#6e7681;">Patience is a position. Check back in 30 min.</span>
+          </div>
+        </div>
+        """)
+    else:
+        # Sort by edge descending
+        plays.sort(key=lambda p: p["edge"], reverse=True)
+
+        # Top counters
+        n_now      = sum(1 for p in plays if p["state"] in ("TOUCHING", "ENTRY_OPEN", "NEAR_FILL"))
+        n_watch    = sum(1 for p in plays if p["state"] in ("APPROACHING", "WATCH_FILL"))
+        best_edge  = plays[0]["edge"]
+        sources    = sorted({p["source"] for p in plays})
+        st.html(f"""
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;">
+          <div style="background:linear-gradient(135deg,#1f6feb,#0969da);border-radius:12px;padding:16px;">
+            <div style="font-size:11px;color:#cbe1ff;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Trade Now</div>
+            <div style="font-size:32px;font-weight:900;color:#fff;margin-top:4px;">{n_now}</div>
+            <div style="font-size:11px;color:#cbe1ff;">live signals</div>
+          </div>
+          <div style="background:linear-gradient(135deg,#d29922,#9e6a03);border-radius:12px;padding:16px;">
+            <div style="font-size:11px;color:#fff3c4;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Watch List</div>
+            <div style="font-size:32px;font-weight:900;color:#fff;margin-top:4px;">{n_watch}</div>
+            <div style="font-size:11px;color:#fff3c4;">approaching trigger</div>
+          </div>
+          <div style="background:linear-gradient(135deg,#238636,#196c2e);border-radius:12px;padding:16px;">
+            <div style="font-size:11px;color:#c4f5d4;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Best Edge</div>
+            <div style="font-size:32px;font-weight:900;color:#fff;margin-top:4px;">{best_edge:.1f}</div>
+            <div style="font-size:11px;color:#c4f5d4;">{plays[0]['ticker']} · {plays[0]['source']}</div>
+          </div>
+          <div style="background:linear-gradient(135deg,#6e40c9,#553098);border-radius:12px;padding:16px;">
+            <div style="font-size:11px;color:#e2d5ff;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Active Systems</div>
+            <div style="font-size:32px;font-weight:900;color:#fff;margin-top:4px;">{len(sources)}</div>
+            <div style="font-size:11px;color:#e2d5ff;">{', '.join(sources)}</div>
+          </div>
+        </div>
+        """)
+
+        st.caption("Plays ranked by **edge score** = win rate × expected return × confidence. "
+                   "All signals are filtered to validated systems only — no setup with negative or unproven historical edge appears here.")
+
+        # Render each play as a card
+        STATE_COLORS = {
+            "TOUCHING":    ("#238636", "🔥"),
+            "ENTRY_OPEN":  ("#1f6feb", "⚡"),
+            "NEAR_FILL":   ("#1f6feb", "⚡"),
+            "APPROACHING": ("#d29922", "👀"),
+            "WATCH_FILL":  ("#d29922", "👀"),
+        }
+        SOURCE_BADGE = {
+            "MA Bounce":  ("#6e40c9", "Weekly MA bounce · validated +243% on real options"),
+            "ML Jackpot": ("#1f6feb", "ML vol+P&L classifier agreement · same-day 0DTE"),
+            "Gap Fill":   ("#0e8c87", "Gap reversal · historical fill rate ≥X%"),
+            "0DTE Drop":  ("#bf3989", "Intraday drop ≥3 pts · drop-band lottery"),
+        }
+        for i, p in enumerate(plays, 1):
+            color, emoji = STATE_COLORS.get(p["state"], ("#8b949e", "•"))
+            src_color, src_desc = SOURCE_BADGE.get(p["source"], ("#8b949e", ""))
+            n_str = f"n={p['n']}" if p["n"] > 0 else "live"
+            st.html(f"""
+            <div style="background:#0d1117;border:1px solid {color};border-left:4px solid {color};
+                        border-radius:12px;padding:18px;margin-bottom:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+                <div style="flex:1;min-width:0;">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+                    <span style="background:#161b22;color:#8b949e;font-size:11px;font-weight:800;
+                                 padding:3px 8px;border-radius:6px;">#{i}</span>
+                    <span style="font-size:22px;font-weight:900;color:#f0f6fc;">{emoji} {p['ticker']}</span>
+                    <span style="background:{src_color}22;color:{src_color};font-size:10px;font-weight:800;
+                                 padding:3px 8px;border-radius:6px;letter-spacing:.04em;text-transform:uppercase;">
+                      {p['source']}</span>
+                    <span style="background:{color}22;color:{color};font-size:10px;font-weight:800;
+                                 padding:3px 8px;border-radius:6px;letter-spacing:.04em;text-transform:uppercase;">
+                      {p['state']}</span>
+                    <span style="color:#6e7681;font-size:11px;">{p['tag']}</span>
+                  </div>
+                  <div style="font-size:18px;font-weight:800;color:{color};margin-bottom:8px;">
+                    → {p['action']}
+                  </div>
+                  <div style="color:#c9d1d9;font-size:13px;line-height:1.55;margin-bottom:8px;">
+                    {p['reason']}
+                  </div>
+                  <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8b949e;">
+                    <span><b style="color:#f0f6fc;">Entry:</b> ${p['entry']:.2f}</span>
+                    <span><b style="color:#f0f6fc;">Target:</b> ${p['target']:.2f}</span>
+                    <span><b style="color:#3fb950;">Win rate:</b> {p['win_rate']:.0f}%</span>
+                    <span><b style="color:#3fb950;">Avg return:</b> +{p['avg_ret']:.2f}%</span>
+                    <span><b style="color:#f0f6fc;">Sample:</b> {n_str}</span>
+                    <span><b style="color:#f0f6fc;">Horizon:</b> {p['horizon']}</span>
+                  </div>
+                </div>
+                <div style="text-align:right;flex-shrink:0;min-width:90px;">
+                  <div style="font-size:10px;color:#6e7681;font-weight:700;letter-spacing:.06em;
+                              text-transform:uppercase;">Edge</div>
+                  <div style="font-size:28px;font-weight:900;color:{color};line-height:1;">{p['edge']:.1f}</div>
+                </div>
+              </div>
+            </div>
+            """)
+
+        st.markdown("---")
+        st.caption("💡 **How to use:** Work the list top-down. Each play shows the exact action, entry, target, and historical edge. "
+                   "Open the corresponding **🎯 Signal Details** page in the sidebar for deeper drill-down. "
+                   "Use **💰 Account Tracker** to log fills and track equity vs. milestones.")
+
+elif page == "Command Center":
     JACKPOT_TICKERS = ("SPY", "QQQ", "IWM", "AAPL")
 
     with st.spinner("Running scanner… (first run trains ML models, ~60 s)"):

@@ -25,15 +25,25 @@ A trading analytics and volatility-scanning web app built from the Mastertrades 
 
 ## Pages
 
-1. **Command Center** — Today's jackpot signals for SPY/QQQ/IWM/AAPL with hero verdict card and trade tickets
-2. **Scanner** — Multi-ticker volatility scanner across 12+ tickers, ranked by P(volatile day)
-3. **Gap Reversal** — Gap fill & reversal setups
-4. **Weekly MAs** — Per-ticker weekly moving-average analysis + order flow + verdict card
-5. **MA Bounce Setups** — Universe-scanned high-edge MA-touch plays (24 setups across 50 tickers × 4 MAs, frozen scan + live distance/state)
-6. **Reversal Levels** — Intraday low/high reversal zones
-7. **0DTE Lottery** — 1000%+ options plays & sweet spots
-8. **Account Tracker** — Log trades, track equity curve and milestones ($500→$5k→$50k→$500k)
-9. **Weekday Patterns** — Volatility analysis by day of week (most volatile vs flattest)
+Sidebar is grouped into 4 sections:
+
+**⚡ TRADE NOW**
+1. **Today's Plays** — Unified ranked list of every actionable signal from every validated source. Strict edge gate (avg_ret > 0, win_rate ≥ 50%, n ≥ 3). Single normalized edge score (`win_rate × avg_ret × confidence × sqrt(n/(n+5))`) makes signals across MA Bounce / ML Jackpot / Gap Fill / 0DTE Drop directly comparable. Source-health banner surfaces partial failures so "no plays" never hides a broken feed.
+
+**🎯 SIGNAL DETAILS** (drill-downs for the unified list)
+2. **Command Center** — ML jackpot signals for SPY/QQQ/IWM/AAPL with hero verdict card
+3. **MA Bounce Setups** — 24 high-edge weekly MA-touch plays (universe-scanned)
+4. **Gap Reversal** — Gap fill & reversal setups (WATCH_FILL ≥70% fill rate is the strong signal; NEAR_FILL ≥50% is moderate)
+5. **0DTE Lottery** — 1000%+ options plays & sweet spots
+
+**📊 RESEARCH** (analysis-only, not direct trade signals)
+6. **Scanner** — Ranked vol universe across 12+ tickers
+7. **Weekly MAs** — Per-ticker MA + order flow drill-down
+8. **Reversal Levels** — Intraday low/high reversal zones
+9. **Weekday Patterns** — Volatility analysis by day of week
+
+**💰 ACCOUNT**
+10. **Account Tracker** — Log trades, track equity curve and milestones ($500→$5k→$50k→$500k)
 
 ### MA Bounce Setups (universe scan)
 
