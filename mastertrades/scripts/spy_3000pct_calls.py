@@ -31,7 +31,10 @@ def premium_pct_for_day(prev_tr_pct: float) -> float:
     return 0.0030
 
 def main():
-    df = fetch_or_load_daily("SPY", history_years=10)  # ~10 years of daily bars
+    import sys as _sys
+    ticker = _sys.argv[1] if len(_sys.argv) > 1 else "SPY"
+    df = fetch_or_load_daily(ticker, history_years=10)  # ~10 years of daily bars
+    print(f"\n[ ticker = {ticker} ]")
     df = df.copy()
     df.columns = [c.lower() if c.lower() in ("open","high","low","close","volume") else c for c in df.columns]
     df["prev_tr_pct"] = (df["high"].shift(1) - df["low"].shift(1)) / df["close"].shift(1) * 100
