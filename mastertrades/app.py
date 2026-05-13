@@ -771,6 +771,274 @@ if page == "Command Center":
         """
     )
 
+    # ── Play detail tabs (below hero card) ────────────────────────────────────
+    _has_dte_detail = _dte_vs in ("ENTRY_OPEN", "APPROACHING")
+    if _ml_active or _gap_best or _has_dte_detail:
+        from src.position_sizer import recommend_allocation as _ra2, TIERS as _TIERS
+
+        _tab_labels: list[str] = []
+        if _ml_active:
+            _tab_labels.append(f"{signal_label(sig)} — ML Trade Plan")
+        if _gap_best:
+            _gbt2, _gbg2 = _gap_best
+            _arr2 = "↓" if _gbg2.gap_dir == "down" else "↑"
+            _tab_labels.append(f"{_arr2} Gap Reversal — {_gbt2}")
+        if _has_dte_detail:
+            _tab_labels.append("🎯 0DTE Lottery — Contracts")
+
+        _play_tabs = st.tabs(_tab_labels)
+        _ti = 0
+
+        # ── ML Trade Plan tab ────────────────────────────────────────────────
+        if _ml_active:
+            with _play_tabs[_ti]:
+                _ti += 1
+                _alloc2 = _ra2(sig, equity_input)
+                _tier2  = _TIERS.get(sig)
+                _lq2    = load_live_quotes(JACKPOT_TICKERS)
+
+                _ml_df = pd.DataFrame([{
+                    "Ticker":     r.ticker,
+                    "Signal":     r.signal.replace("GO_", ""),
+                    "P(vol)":     f"{r.p_vol * 100:.1f}%",
+                    "P(pnl)":     f"{r.p_pnl * 100:.1f}%",
+                    "Last Price": fmt_dollar((_lq2.get(r.ticker) or {}).get("last_price") or r.last_close),
+                    "Action":     ("TRADE 🎯" if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")
+                                   else "WATCH 🔥" if r.signal == "GO_HOT" else "—"),
+                } for r in rows])
+                st.dataframe(_ml_df, hide_index=True, use_container_width=True)
+
+                if _alloc2 and _tier2:
+                    _c1, _c2, _c3, _c4 = st.columns(4)
+                    _c1.metric("Allocate",         f"${_alloc2.alloc_dollars:,.2f}",
+                               f"{_alloc2.alloc_pct * 100:.0f}% of equity")
+                    _c2.metric("Avg win scenario", f"+${_alloc2.win_scenario:,.2f}",
+                               f"{(_tier2.avg_win_mult - 1) * 100:.0f}% gain")
+                    _c3.metric("Max loss",         f"-${_alloc2.max_loss:,.2f}",
+                               "if expires worthless")
+                    _c4.metric("Historical win %", f"{_tier2.win_prob * 100:.0f}%",
+                               "backtest estimate")
+
+                _trade_tkr2 = (trade_tickers[0] if trade_tickers
+                               else hot_tickers[0] if hot_tickers
+                               else best_row.ticker)
+                st.html(f"""
+                <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+                            padding:14px 18px;margin-top:8px;
+                            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+                  <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.1em;margin-bottom:12px;">Entry Plan</div>
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+                    <div>
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Instrument</div>
+                      <div style="color:#3fb950;font-weight:800;font-size:15px;">
+                        {_trade_tkr2} 0DTE CALLS</div>
+                      <div style="color:#8b949e;font-size:12px;margin-top:3px;">
+                        ATM or 1–2 strikes OTM at open</div>
+                    </div>
+                    <div>
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Entry Timing</div>
+                      <div style="color:#ffd633;font-weight:800;font-size:15px;">
+                        9:30–9:50 AM ET</div>
+                      <div style="color:#8b949e;font-size:12px;margin-top:3px;">
+                        Wait for opening print — buy near open</div>
+                    </div>
+                    <div>
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Size / Max Risk</div>
+                      <div style="color:#f85149;font-weight:800;font-size:15px;">
+                        ${_alloc2.alloc_dollars if _alloc2 else 0:,.2f}</div>
+                      <div style="color:#8b949e;font-size:12px;margin-top:3px;">
+                        {f"{_alloc2.alloc_pct * 100:.0f}% of equity" if _alloc2 else ""}
+                        — full loss possible</div>
+                    </div>
+                  </div>
+                </div>""")
+
+        # ── Gap Reversal tab ─────────────────────────────────────────────────
+        if _gap_best:
+            with _play_tabs[_ti]:
+                _ti += 1
+                _gbt2, _gbg2 = _gap_best
+                _gact2    = "BUY CALLS" if _gbg2.gap_dir == "down" else "BUY PUTS"
+                _gact_c2  = "#3fb950"   if _gbg2.gap_dir == "down" else "#f85149"
+                _fill2    = _gbg2.fill_level
+                _open2    = _gbg2.open_price
+                _gpts2    = abs(_gbg2.gap_pts)
+                _stop2    = round(_open2 - 1.5, 2) if _gbg2.gap_dir == "down" else round(_open2 + 1.5, 2)
+                _ct2      = "CALL" if _gbg2.gap_dir == "down" else "PUT"
+
+                # Three suggested strikes: ATM / midpoint / at-fill
+                _sk_atm  = round(_open2)
+                _sk_fill = round(_fill2)
+                _sk_mid  = round((_open2 + _fill2) / 2)
+                _sk_list = [
+                    (_sk_atm,  "CONSERVATIVE",   "Near current open · higher probability, smaller % gain"),
+                    (_sk_mid,  "BEST R/R 🎯",    "Mid-gap strike · balanced risk / reward"),
+                    (_sk_fill, "AGGRESSIVE",      "At fill level · cheap OTM — explosive if gap fills"),
+                ]
+                _sk_html2 = ""
+                for _sk, _sk_lbl, _sk_note in _sk_list:
+                    _is_b2  = "R/R" in _sk_lbl
+                    _sk_bg2 = "#0d1f14" if _is_b2 else "#161b22"
+                    _sk_bd2 = "#3fb950" if _is_b2 else "#30363d"
+                    _btag2  = ('<div style="font-size:9px;color:#3fb950;margin-bottom:6px;">'
+                               '★ BEST R/R</div>' if _is_b2 else "")
+                    _sk_html2 += f"""
+                    <div style="background:{_sk_bg2};border:2px solid {_sk_bd2};border-radius:10px;
+                                padding:14px;flex:1;min-width:140px;text-align:center;">
+                      {_btag2}
+                      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                  letter-spacing:.06em;margin-bottom:6px;">{_sk_lbl}</div>
+                      <div style="font-size:17px;font-weight:800;color:#e6edf3;">
+                        {_gbt2} ${_sk} {_ct2}</div>
+                      <div style="font-size:11px;color:#8b949e;margin-top:8px;
+                                  line-height:1.5;">{_sk_note}</div>
+                    </div>"""
+
+                _fill_rate_str = (f"{_gbg2.hist_fill_rate * 100:.0f}%"
+                                  if _gbg2.hist_fill_rate else "N/A")
+                _rev_str = (f"+{_gbg2.hist_med_rev_pts:.2f} pts beyond fill"
+                            if _gbg2.hist_med_rev_pts else "")
+                _n_str   = (f"n={_gbg2.hist_n_similar} sessions"
+                            if _gbg2.hist_n_similar else "")
+
+                st.html(f"""
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);
+                              gap:10px;margin-bottom:16px;">
+                    <div style="background:#161b22;border:1px solid #30363d;
+                                border-radius:8px;padding:12px;text-align:center;">
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Today's Open</div>
+                      <div style="color:#e6edf3;font-size:18px;font-weight:800;">
+                        ${_open2:.2f}</div>
+                      <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                        entry zone</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid {_gact_c2};
+                                border-radius:8px;padding:12px;text-align:center;">
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Fill Target</div>
+                      <div style="color:{_gact_c2};font-size:18px;font-weight:800;">
+                        ${_fill2:.2f}</div>
+                      <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                        prev close · +{_gpts2:.2f} pts</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #f85149;
+                                border-radius:8px;padding:12px;text-align:center;">
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Stop Loss</div>
+                      <div style="color:#f85149;font-size:18px;font-weight:800;">
+                        ${_stop2:.2f}</div>
+                      <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                        exit if breaks past open</div>
+                    </div>
+                    <div style="background:#161b22;border:1px solid #58a6ff;
+                                border-radius:8px;padding:12px;text-align:center;">
+                      <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                                  margin-bottom:4px;">Hist. Fill Rate</div>
+                      <div style="color:#58a6ff;font-size:18px;font-weight:800;">
+                        {_fill_rate_str}</div>
+                      <div style="color:#8b949e;font-size:10px;margin-top:2px;">
+                        {_n_str}</div>
+                    </div>
+                  </div>
+
+                  <div style="color:#6e7681;font-size:10px;text-transform:uppercase;
+                              letter-spacing:.08em;margin-bottom:10px;">
+                    Suggested Contracts</div>
+                  <div style="display:flex;gap:10px;flex-wrap:wrap;
+                              margin-bottom:14px;">{_sk_html2}</div>
+
+                  <div style="background:#0c1520;border:1px solid #1d3a5c;
+                              border-radius:8px;padding:12px 14px;
+                              font-size:11px;color:#8b949e;line-height:1.7;">
+                    <strong style="color:#58a6ff;">Trade plan:</strong>
+                    {_gact2} {_gbt2} at open · Target fill at ${_fill2:.2f}
+                    (+{_gpts2:.2f} pts) · Stop ${_stop2:.2f}
+                    {("· Median reversal after fill: " + _rev_str) if _rev_str else ""} ·
+                    Use 5–10% of equity (gap plays are lower conviction than full JACKPOT).
+                  </div>
+                </div>""")
+
+        # ── 0DTE Lottery tab ─────────────────────────────────────────────────
+        if _has_dte_detail:
+            with _play_tabs[_ti]:
+                _ti += 1
+                _dte_recs2 = _dte_verd.get("recs") or []
+                _drop2     = _dte_verd.get("drop_pts") or 0
+                _d_open2   = _dte_verd.get("day_open") or 0
+                _d_low2    = _dte_verd.get("day_low")  or 0
+
+                if _dte_vs == "APPROACHING":
+                    st.info(
+                        f"SPY is {_drop2:.1f} pts below open (${_d_open2:.2f}). "
+                        f"Setup activates at 3 pts — need "
+                        f"{max(0.0, 3.0 - _drop2):.1f} more pts of drop. Watch for entry.")
+
+                if _dte_recs2:
+                    _recs2_html = ""
+                    for _ri, _rec2 in enumerate(_dte_recs2[:3]):
+                        _ib2    = _ri == 0
+                        _rb2    = "#0d1f14" if _ib2 else "#161b22"
+                        _rbd2   = "#3fb950" if _ib2 else "#30363d"
+                        _btag3  = ('<div style="font-size:9px;color:#3fb950;margin-bottom:6px;">'
+                                   '★ BEST R/R</div>' if _ib2 else "")
+                        _gc2    = ("#ffd633" if _rec2.est_gain_pct >= 1000
+                                   else "#3fb950" if _rec2.est_gain_pct >= 500
+                                   else "#58a6ff")
+                        _recs2_html += f"""
+                        <div style="background:{_rb2};border:2px solid {_rbd2};
+                                    border-radius:12px;padding:16px;flex:1;
+                                    min-width:150px;text-align:center;">
+                          {_btag3}
+                          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                                      letter-spacing:.07em;margin-bottom:4px;">
+                            SPY ${_rec2.strike:.0f} CALL</div>
+                          <div style="color:#8b949e;font-size:10px;margin-bottom:10px;">
+                            +{_rec2.dist_from_low:.0f} pts above low</div>
+                          <div style="font-size:12px;color:#8b949e;margin-bottom:3px;">Entry:
+                            <strong style="color:#e6edf3;font-size:16px;">
+                              ${_rec2.est_entry_price:.2f}</strong></div>
+                          <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">Target:
+                            <strong style="color:#3fb950;font-size:16px;">
+                              ${_rec2.est_target_price:.2f}</strong></div>
+                          <div style="font-size:24px;font-weight:800;color:{_gc2};">
+                            +{_rec2.est_gain_pct:,.0f}%</div>
+                          <div style="font-size:10px;color:#8b949e;margin-top:4px;">
+                            {_rec2.risk_category.split("—")[0].strip()}</div>
+                        </div>"""
+
+                    st.html(f"""
+                    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+                      <div style="display:flex;gap:10px;flex-wrap:wrap;
+                                  margin-bottom:14px;">{_recs2_html}</div>
+                      <div style="background:#0c1520;border:1px solid #1d3a5c;border-radius:8px;
+                                  padding:12px 14px;font-size:11px;color:#8b949e;line-height:1.7;">
+                        <strong style="color:#58a6ff;">Entry note:</strong>
+                        SPY at intraday low ${_d_low2:.2f} · Open was ${_d_open2:.2f} ·
+                        Drop: {_drop2:.1f} pts · Buy calls at or near current low ·
+                        Target: recovery to open ${_d_open2:.2f} · Use 10% of equity max.
+                      </div>
+                    </div>""")
+                else:
+                    st.info("Detailed strike prices appear once Polygon live options data is "
+                            "available (requires Polygon options subscription).")
+
+                _alloc_dte2 = _ra2("ENTRY_OPEN", equity_input)
+                if _alloc_dte2:
+                    _dc1, _dc2, _dc3 = st.columns(3)
+                    _dc1.metric("Spend (10% Kelly)", f"${_alloc_dte2.alloc_dollars:,.2f}",
+                                "max you can lose")
+                    _dc2.metric("If 1000% hit",
+                                f"+${_alloc_dte2.alloc_dollars * 9:,.2f}", "net profit")
+                    _dc3.metric("Win rate (hist)", "35%",
+                                "SPY 3–5 pt drop band")
+
     # ── Live quotes ───────────────────────────────────────────────────────────
     live_q = load_live_quotes(JACKPOT_TICKERS)
 
