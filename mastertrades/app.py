@@ -526,6 +526,40 @@ with st.sidebar:
 #  PAGE 1: COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _contract_row_html(p: dict) -> str:
+    """Render the 'what to actually buy' row: strike, expiry, premium per contract,
+    and how many contracts $1k of capital buys. Falls back to the legacy
+    Entry/Target line for plays that haven't been upgraded with contract specs."""
+    if "contract_strike" not in p:
+        return (f'<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8b949e;">'
+                f'<span><b style="color:#f0f6fc;">Entry:</b> ${p["entry"]:.2f}</span>'
+                f'<span><b style="color:#f0f6fc;">Target:</b> ${p["target"]:.2f}</span>'
+                f'</div>')
+    strike   = p["contract_strike"]
+    ctype    = p["contract_type"]
+    expiry   = p["contract_expiry"]
+    prem     = float(p["contract_premium"])
+    notes    = p.get("contract_notes", "")
+    n_per_1k = int(1000 // prem) if prem > 0 else 0
+    return (
+        f'<div style="background:#0a1428;border-left:3px solid #58a6ff;border-radius:8px;'
+        f'padding:10px 12px;margin-bottom:8px;">'
+        f'  <div style="font-size:10px;color:#58a6ff;font-weight:800;letter-spacing:.08em;'
+        f'              text-transform:uppercase;margin-bottom:6px;">📜 Contract to buy</div>'
+        f'  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px 18px;'
+        f'              font-size:12px;color:#c9d1d9;">'
+        f'    <div><b style="color:#58a6ff;">Strike / type:</b> ${strike} {ctype}</div>'
+        f'    <div><b style="color:#58a6ff;">Expiry:</b> {expiry}</div>'
+        f'    <div><b style="color:#58a6ff;">Est. cost:</b> ~${prem:,.0f} per contract'
+        f'         <span style="color:#6e7681;">(${prem/100:.2f} × 100)</span></div>'
+        f'    <div><b style="color:#58a6ff;">Per $1k capital:</b> {n_per_1k} contract'
+        f'         {"s" if n_per_1k != 1 else ""}</div>'
+        f'  </div>'
+        + (f'  <div style="margin-top:6px;font-size:11px;color:#8b949e;">{notes}</div>' if notes else "")
+        + f'</div>'
+    )
+
+
 if page == "Today's Plays":
     import math
     section("⚡ Today's Plays",
@@ -638,6 +672,11 @@ if page == "Today's Plays":
             # where $5 ≈ 0.5–6% OTM. For lower-priced names $5 would be absurd.
             otm_distance = min(5.0, smart_entry * 0.02)
             otm5_strike  = round(smart_entry + otm_distance)
+            # Premium for a 1-week ~$5 OTM call: empirically ~1.5–2.2% of strike
+            # for SPY/QQQ-class names; use 1.8% as a single rough estimate so the
+            # card surfaces an indicative $/contract. Real fills will vary by IV.
+            ma_premium_per_share = otm5_strike * 0.018
+            ma_premium_per_contract = ma_premium_per_share * 100
             plays.append({
                 "source": "MA Bounce", "ticker": s.ticker, "tag": s.ma_label,
                 "state": s.state, "action": action,
@@ -648,6 +687,11 @@ if page == "Today's Plays":
                 "reason": f"{s.ma_label} historically bounces {s.pct_pos_5d:.0f}% of touches for +{s.avg_5d:.2f}% in 5d (n={s.n_touches}). "
                           f"Currently {s.distance_pct:+.2f}% from MA, {s.state}.",
                 "horizon": "5 days (weekly options)",
+                "contract_strike":   otm5_strike,
+                "contract_type":     "call",
+                "contract_expiry":   "1-week (next Friday)",
+                "contract_premium":  ma_premium_per_contract,
+                "contract_notes":    "OTM call, ~1.8% of strike est. — confirm vs live chain",
                 # Smart-entry doctrine fields (consumed by play card render below)
                 "doctrine_ma":          s.ma_value,
                 "doctrine_smart_entry": smart_entry,
@@ -665,13 +709,22 @@ if page == "Today's Plays":
         source_health["MA Bounce"] = {"ok": False, "msg": f"ERROR: {e}", "n_in": 0, "n_kept": 0}
 
     # 2. ML Jackpot (GO_JACKPOT / GO_ULTRA_JACKPOT)
+    #    Execution-time gap filter: skip any signal whose overnight gap is
+    #    already >= STRICT_MAX_ABS_GAP_PCT (1.5%). Validated on 2-yr WF
+    #    backtest (Apr 8 2025/2026 both fired and lost ~100% with big gaps).
     try:
+        from src.jackpot_scanner import STRICT_MAX_ABS_GAP_PCT
         jackpot_rows, jerr = load_jackpot_scan()
-        n_in = n_kept = 0
+        n_in = n_kept = n_gap_skip = 0
         for r in jackpot_rows:
             if r.signal not in ("GO_JACKPOT", "GO_ULTRA_JACKPOT"):
                 continue
             n_in += 1
+            # Skip if |gap| >= threshold OR gap is unknown (conservative).
+            import math as _math
+            if _math.isnan(r.gap_pct) or abs(r.gap_pct) >= STRICT_MAX_ABS_GAP_PCT:
+                n_gap_skip += 1
+                continue
             is_ultra = (r.signal == "GO_ULTRA_JACKPOT")
             win_rate = (r.ultra_win_rate_history if is_ultra else r.win_rate_history) * 100
             avg_ret  = (r.ultra_avg_ret_history if is_ultra else r.avg_ret_history) * 100
@@ -680,20 +733,38 @@ if page == "Today's Plays":
                 continue   # ← rejects ML signals with non-positive historical edge
             conf = 1.2 if is_ultra else 1.0
             edge = _edge(win_rate, avg_ret, n_hist, conf)
+            # ATM strike rounded to the nearest $5 (SPY/QQQ standard increments).
+            atm_strike = round(r.last_close / 5) * 5
+            premium_per_contract = r.estimated_premium_dollars * 100  # $/share × 100
+            if is_ultra:
+                # Straddle ≈ call + put, each ≈ same ATM premium
+                contract_premium = premium_per_contract * 2
+                contract_type    = "ATM straddle (call + put)"
+            else:
+                contract_premium = premium_per_contract
+                contract_type    = "ATM call"
             plays.append({
                 "source": "ML Jackpot", "ticker": r.ticker, "tag": r.signal,
                 "state": "ENTRY_OPEN",
-                "action": "BUY 0DTE STRADDLE" if is_ultra else "BUY 0DTE OPTIONS",
+                "action": "BUY 0DTE STRADDLE" if is_ultra else "BUY 0DTE CALL",
                 "entry": r.last_close,
                 "target": r.last_close * (1 + avg_ret / 100),
                 "win_rate": win_rate, "avg_ret": avg_ret, "n": n_hist,
                 "edge": edge,
-                "reason": f"Both ML models agree: P(volatile)={r.p_vol:.0%}, P(P&L)={r.p_pnl:.0%}. "
+                "reason": f"Both ML models agree: P(volatile)={r.p_vol:.0%}, P(P&L)={r.p_pnl:.0%}, "
+                          f"gap={r.gap_pct:+.2f}%. "
                           f"Historical {r.signal}: {win_rate:.0f}% win @ +{avg_ret:.2f}% avg (n={n_hist}).",
                 "horizon": "Same day (0DTE)",
+                "contract_strike":   atm_strike,
+                "contract_type":     contract_type,
+                "contract_expiry":   "0DTE (today)",
+                "contract_premium":  contract_premium,
+                "contract_notes":    f"Premium ≈ {r.premium_pct*100:.2f}% of underlying",
             })
             n_kept += 1
         msg = f"{len(jackpot_rows)} tickers scanned, {n_in} fired, {n_kept} passed edge gate"
+        if n_gap_skip:
+            msg += f" · {n_gap_skip} skipped (gap ≥ {STRICT_MAX_ABS_GAP_PCT}%)"
         if jerr:
             msg += f" · ⚠ {len(jerr)} ticker errors"
         source_health["ML Jackpot"] = {"ok": True, "msg": msg, "n_in": n_in, "n_kept": n_kept}
@@ -730,6 +801,10 @@ if page == "Today's Plays":
             edge = _edge(bt["win_rate"], avg_realised_pct, sample_n, base_conf)
             direction = "PUTS (gap up → fill down)" if tg.gap_dir == "up" else "CALLS (gap down → fill up)"
             tier_tag = "💎 PRIME" if is_prime else tg.signal
+            # ATM 0DTE option ≈ 0.30% of spot for SPY/QQQ-class names
+            gap_strike = round(tg.open_price / 5) * 5
+            gap_premium_per_contract = tg.open_price * 0.003 * 100
+            gap_opt_type = "put" if tg.gap_dir == "up" else "call"
             plays.append({
                 "source": "Gap Fill", "ticker": tkr,
                 "tag": f"Gap {tg.gap_dir} {tg.gap_pct*100:+.2f}%"
@@ -751,6 +826,11 @@ if page == "Today's Plays":
                        if is_prime else "")
                 ),
                 "horizon": "Same day (intraday fill)",
+                "contract_strike":   gap_strike,
+                "contract_type":     f"ATM {gap_opt_type}",
+                "contract_expiry":   "0DTE (today)",
+                "contract_premium":  gap_premium_per_contract,
+                "contract_notes":    "ATM 0DTE est. ~0.30% of spot — confirm vs live chain",
             })
             n_kept += 1
         dropped_tickers = [t for t, v in GAP_FILL_PER_TICKER.items() if v is None]
@@ -804,6 +884,11 @@ if page == "Today's Plays":
                           f"{hist_pct:.0f}% of similar drops produced 1000%+ option moves on recovery to VWAP/open. "
                           f"⚠ Lottery-grade: small sample, heavy shrinkage applied.",
                 "horizon": "Minutes–hours (0DTE intraday)",
+                "contract_strike":   top_rec.strike,
+                "contract_type":     "OTM call",
+                "contract_expiry":   "0DTE (today)",
+                "contract_premium":  top_rec.est_entry_price * 100,
+                "contract_notes":    f"Est. peak +{top_rec.est_gain_pct:.0f}% on recovery to open",
             })
             n_kept += 1
         msg = f"3 tickers polled, {n_in} firing, {n_kept} passed edge gate"
@@ -969,13 +1054,13 @@ if page == "Today's Plays":
                   <div style="color:#c9d1d9;font-size:13px;line-height:1.55;margin-bottom:8px;">
                     {p['reason']}
                   </div>
-                  <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8b949e;">
-                    <span><b style="color:#f0f6fc;">Entry:</b> ${p['entry']:.2f}</span>
-                    <span><b style="color:#f0f6fc;">Target:</b> ${p['target']:.2f}</span>
+                  {_contract_row_html(p)}
+                  <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:#8b949e;margin-top:8px;">
                     <span><b style="color:#3fb950;">Win rate:</b> {p['win_rate']:.0f}%</span>
                     <span><b style="color:#3fb950;">Avg return:</b> +{p['avg_ret']:.2f}%</span>
                     <span><b style="color:#f0f6fc;">Sample:</b> {n_str}</span>
                     <span><b style="color:#f0f6fc;">Horizon:</b> {p['horizon']}</span>
+                    <span style="color:#6e7681;">Underlying ${p['entry']:.2f} → ${p['target']:.2f}</span>
                   </div>
                 </div>
                 <div style="text-align:right;flex-shrink:0;min-width:90px;">

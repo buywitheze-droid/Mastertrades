@@ -65,8 +65,22 @@ Sidebar is grouped into 4 sections:
 
 - **GO_ULTRA_JACKPOT** 🌟 — Both vol + P&L classifiers fire at highest confidence (ULTRA tier)
 - **GO_JACKPOT** ✅ — Both vol + direct-P&L classifiers fire (trade day)
-- **GO_HOT** 🔥 — Vol classifier fires alone (elevated, lower confidence)
+- **GO_HOT** 🔥 — Vol classifier fires; **STRICT MODE** also requires `p_weekly ≥ 0.13`
 - **SKIP** ⏭ — Calm expected, skip trading
+
+### STRICT_MODE — empirically validated quality gate (default ON)
+
+Constants live in `src/jackpot_scanner.py`: `STRICT_MODE`, `STRICT_HOT_WEEKLY_MIN=0.13`, `STRICT_MAX_ABS_GAP_PCT=1.5`.
+
+Validated by `scripts/backtest_signal_threshold.py` on 2 yrs of SPY signals (550 walk-forward sessions, 48 fired, **real Polygon options OHLC** for the actual ATM/+$5 OTM calls, no leakage):
+
+- **Baseline GO_HOT**: avg per-trade +5.9%, win rate 21%, median −98% (lottery)
+- **+ p_weekly ≥ 0.13 gate** (in `classify_signal`): 24 trades, **avg +28.9%, win 25%** — best single filter found
+- **+ |gap| < 1.5% skip at execution** (in `app.py` Today's Plays): removes ~100% losers like Apr 8 2025 (+3.5% gap) and Apr 8 2026 (+2.6% gap), both confirmed in backtest
+
+Two upper tiers (GO_JACKPOT / GO_ULTRA_JACKPOT) are **unaffected** by the strict gate — they already require their own thresholds. Profit-take rules were tested and **rejected** (any half-off ≤ +500% destroys the asymmetric edge).
+
+Caveats: 48-trade sample is modest; thresholds are tuned in-sample on this same window. Out-of-sample retest (2022–2023, or non-SPY tickers) would harden further. To A/B test, set `STRICT_MODE = False` in `src/jackpot_scanner.py`.
 
 ## User preferences
 

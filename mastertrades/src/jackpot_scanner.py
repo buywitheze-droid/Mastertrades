@@ -76,6 +76,21 @@ JACKPOT_THRESHOLD = 0.55      # p_pnl cutoff for "highest-conviction profit setu
 WEEKLY_CONFIRM_THRESHOLD = 0.55  # p_weekly cutoff used for the ULTRA tier
 WEEKLY_DAYS = 5               # weekly model lookahead window
 
+# STRICT MODE — empirically validated 2-yr walk-forward backtest on SPY
+# (scripts/backtest_signal_threshold.py, 48 fired signals, real Polygon options).
+# Without this gate: avg per-trade return +5.9%, win rate 21%.
+# With p_weekly ≥ 0.13 gate on GO_HOT: avg +28.9%, win rate 25% (24 trades).
+# The weekly model implicitly screens for "this week's setup is rich enough"
+# and removes most of the lottery noise that pollutes raw GO_HOT.
+STRICT_MODE = True
+STRICT_HOT_WEEKLY_MIN = 0.13
+
+# EXECUTION-TIME GAP FILTER (also from the same backtest).
+# Skip live trades when the overnight gap already moved >= 1.5% — the move
+# is "in the past" and the 9:30 entry catches none of it (Apr 8 2025/2026
+# both fired and lost ~100% with gaps of +3.5% and +2.6%).
+STRICT_MAX_ABS_GAP_PCT = 1.5
+
 logger = logging.getLogger("jackpot_scanner")
 
 
@@ -466,6 +481,10 @@ class JackpotRow:
     ultra_avg_ret_history: float
     ultra_weekly_avg_ret_history: float
 
+    # Overnight gap %  (open / prev_close − 1) × 100 — exposed for the
+    # execution-time gap filter (skip live trades when |gap| >= 1.5%).
+    gap_pct: float = 0.0
+
     def to_dict(self) -> dict:
         return {
             "ticker": self.ticker,
@@ -491,24 +510,33 @@ class JackpotRow:
             "ultra_win_rate_history": self.ultra_win_rate_history,
             "ultra_avg_ret_history": self.ultra_avg_ret_history,
             "ultra_weekly_avg_ret_history": self.ultra_weekly_avg_ret_history,
+            "gap_pct": self.gap_pct,
         }
 
 
 def classify_signal(p_vol: float, p_pnl: float, p_weekly: float,
                     hot_threshold: float = HOT_THRESHOLD,
                     jackpot_threshold: float = JACKPOT_THRESHOLD,
-                    weekly_threshold: float = WEEKLY_CONFIRM_THRESHOLD) -> str:
+                    weekly_threshold: float = WEEKLY_CONFIRM_THRESHOLD,
+                    strict: bool = STRICT_MODE,
+                    strict_hot_weekly_min: float = STRICT_HOT_WEEKLY_MIN) -> str:
     """Four-tier signal:
         GO_ULTRA_JACKPOT  — vol HOT + 0DTE-PnL >= jp + weekly >= wkly
         GO_JACKPOT        — vol HOT + 0DTE-PnL >= jp (no weekly confirm)
-        GO_HOT            — vol HOT alone
+        GO_HOT            — vol HOT alone (+ p_weekly >= 0.13 in strict mode)
         SKIP              — calm
+
+    Strict mode (default) gates GO_HOT on p_weekly >= 0.13 — empirically
+    validated to lift per-trade return from +5.9% to +28.9% over a 2-yr
+    walk-forward backtest on SPY. The two upper tiers are unaffected.
     """
     if p_vol >= hot_threshold and p_pnl >= jackpot_threshold and p_weekly >= weekly_threshold:
         return "GO_ULTRA_JACKPOT"
     if p_vol >= hot_threshold and p_pnl >= jackpot_threshold:
         return "GO_JACKPOT"
     if p_vol >= hot_threshold:
+        if strict and p_weekly < strict_hot_weekly_min:
+            return "SKIP"
         return "GO_HOT"
     return "SKIP"
 
@@ -718,6 +746,8 @@ def score_jackpot_one_walkforward(
     last_close = float(daily["Close"].iloc[-1])
     prev_close = float(daily["Close"].iloc[-2]) if len(daily) >= 2 else float("nan")
     pct_change = (last_close / prev_close - 1.0) if not pd.isna(prev_close) else float("nan")
+    last_open = float(daily["Open"].iloc[-1])
+    gap_pct = ((last_open / prev_close - 1.0) * 100.0) if not pd.isna(prev_close) else 0.0
 
     # Stats are descriptive (per-ticker historical jackpot frequency); fine to
     # compute on full history — they are NOT used as model input.
@@ -753,6 +783,7 @@ def score_jackpot_one_walkforward(
         ultra_win_rate_history=float(stats.get("ultra_win_rate", float("nan"))),
         ultra_avg_ret_history=float(stats.get("ultra_avg_ret", float("nan"))),
         ultra_weekly_avg_ret_history=float(stats.get("ultra_weekly_avg_ret", float("nan"))),
+        gap_pct=float(gap_pct),
     )
 
 
@@ -818,6 +849,8 @@ def score_jackpot_one(
     last_close = float(daily["Close"].iloc[-1])
     prev_close = float(daily["Close"].iloc[-2]) if len(daily) >= 2 else float("nan")
     pct_change = (last_close / prev_close - 1.0) if not pd.isna(prev_close) else float("nan")
+    last_open = float(daily["Open"].iloc[-1])
+    gap_pct_legacy = ((last_open / prev_close - 1.0) * 100.0) if not pd.isna(prev_close) else 0.0
 
     stats = load_or_compute_stats(
         ticker, daily, feats, premium_pct, weekly_premium_pct,
@@ -848,6 +881,7 @@ def score_jackpot_one(
         ultra_win_rate_history=float(stats.get("ultra_win_rate", float("nan"))),
         ultra_avg_ret_history=float(stats.get("ultra_avg_ret", float("nan"))),
         ultra_weekly_avg_ret_history=float(stats.get("ultra_weekly_avg_ret", float("nan"))),
+        gap_pct=float(gap_pct_legacy),
     )
 
 
