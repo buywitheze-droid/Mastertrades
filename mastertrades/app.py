@@ -418,6 +418,7 @@ PAGE_META = {
     "Command Center":   "Today's trade signals",
     "Scanner":          "Ranked volatility universe",
     "Gap Reversal":     "Gap fill & reversal setups",
+    "Weekly MAs":       "Weekly moving averages + order flow",
     "Reversal Levels":  "Intraday low/high reversal zones",
     "0DTE Lottery":     "1000%+ options plays & sweet spots",
     "Account Tracker":  "Equity curve & trade log",
@@ -3252,6 +3253,281 @@ elif page == "Account Tracker":
                 "Note":   t.note or "",
             })
         st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PAGE: WEEKLY MAs + ORDER FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "Weekly MAs":
+    from src.weekly_levels import (
+        build_ma_setups, build_weekly_order_flow, build_reversal_verdict,
+    )
+
+    with st.sidebar:
+        st.markdown("---")
+        wma_ticker = st.selectbox(
+            "Ticker", ["SPY", "QQQ", "IWM", "AAPL", "NVDA", "TSLA", "AMZN", "META"],
+            index=0, key="wma_ticker",
+        )
+
+    section("Weekly Moving Averages — Reversal Levels",
+            f"{wma_ticker} · weekly MA touch zones + weekly order flow confluence")
+
+    # Load 2 years of daily data so 50w/100w MAs are well-defined
+    try:
+        from src.scanner import fetch_or_load_daily
+        _daily = fetch_or_load_daily(wma_ticker).sort_index()
+        _daily.index = pd.to_datetime(_daily.index).tz_localize(None)
+    except Exception as exc:
+        st.error(f"Could not load daily data for {wma_ticker}: {exc}")
+        st.stop()
+
+    if len(_daily) < 250:
+        st.warning(f"Need at least 250 daily bars for full weekly MA analysis. Have {len(_daily)}.")
+        st.stop()
+
+    setups = build_ma_setups(_daily)
+    flow   = build_weekly_order_flow(_daily)
+    verdict = build_reversal_verdict(_daily)
+    last_price = float(_daily["Close"].iloc[-1])
+
+    # ── HERO VERDICT CARD ─────────────────────────────────────────────────
+    _bias_color = {"LONG": "#3fb950", "SHORT": "#f85149", "NEUTRAL": "#8b949e"}[verdict.bias]
+    _conf_color = {"HIGH": "#3fb950", "MEDIUM": "#d29922", "LOW": "#8b949e"}[verdict.confidence]
+    _bias_emoji = {"LONG": "🟢", "SHORT": "🔴", "NEUTRAL": "⚪"}[verdict.bias]
+
+    st.html(f"""
+    <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);
+                border:2px solid {_bias_color};border-radius:14px;padding:22px 26px;
+                margin-bottom:18px;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:4px;">Active Setup</div>
+          <div style="font-size:26px;font-weight:900;color:{_bias_color};">
+            {_bias_emoji} {verdict.bias} BIAS
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:4px;">Confidence</div>
+          <div style="font-size:22px;font-weight:800;color:{_conf_color};">
+            {verdict.confidence}
+          </div>
+        </div>
+      </div>
+      <div style="color:#e6edf3;font-size:15px;line-height:1.55;margin-bottom:10px;">
+        {verdict.headline}
+      </div>
+      <div style="color:#c8e6c9;font-size:13px;line-height:1.5;
+                  background:#0c1f12;border-left:3px solid {_bias_color};
+                  padding:10px 14px;border-radius:6px;margin-bottom:10px;">
+        <strong>Confluence:</strong> {verdict.confluence_note}
+      </div>
+      <div style="color:#79c0ff;font-size:13px;line-height:1.5;
+                  background:#0d1f3a;border-left:3px solid #1f6feb;
+                  padding:10px 14px;border-radius:6px;">
+        <strong>Play:</strong> {verdict.play_suggestion or "Wait for price to approach the key level."}
+      </div>
+    </div>
+    """)
+
+    # ── CURRENT PRICE + WEEKLY ORDER FLOW GAUGE ────────────────────────────
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.html(f"""
+        <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;
+                    padding:18px 16px;text-align:center;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:6px;">{wma_ticker} Last Close</div>
+          <div style="font-size:32px;font-weight:900;color:#e6edf3;
+                      letter-spacing:-.02em;">${last_price:,.2f}</div>
+          <div style="color:#8b949e;font-size:11px;margin-top:6px;">
+            as of {_daily.index[-1].date()}
+          </div>
+        </div>
+        """)
+    with c2:
+        if flow is None:
+            st.info("Weekly order-flow data unavailable.")
+        else:
+            _fs = flow.flow_score
+            _fs_color = "#3fb950" if _fs >= 10 else ("#f85149" if _fs <= -10 else "#8b949e")
+            # gauge bar position 0..100
+            _gauge_pos = max(0, min(100, (_fs + 100) / 2))
+            st.html(f"""
+            <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;
+                        padding:18px 22px;
+                        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+                <div>
+                  <div style="color:#8b949e;font-size:11px;text-transform:uppercase;
+                              letter-spacing:.1em;">Weekly Order Flow</div>
+                  <div style="color:#e6edf3;font-size:13px;margin-top:2px;">
+                    Week ending {flow.week_ending.date()} — {flow.interpretation}
+                  </div>
+                </div>
+                <div style="font-size:28px;font-weight:900;color:{_fs_color};">
+                  {_fs:+.0f}
+                </div>
+              </div>
+              <div style="background:linear-gradient(90deg,#f85149 0%,#8b949e 50%,#3fb950 100%);
+                          height:8px;border-radius:4px;position:relative;margin:10px 0 14px 0;">
+                <div style="position:absolute;left:{_gauge_pos}%;top:-4px;width:3px;height:16px;
+                            background:#e6edf3;border-radius:2px;
+                            box-shadow:0 0 6px rgba(255,255,255,.6);"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;
+                          color:#c9d1d9;font-size:12px;">
+                <div>
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Closing Strength</div>
+                  <div style="font-weight:700;">{flow.closing_strength:.2f}
+                    <span style="color:#8b949e;font-size:11px;font-weight:400;"> · 4w {flow.closing_strength_4w_avg:.2f}</span>
+                  </div>
+                </div>
+                <div>
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Weekly CVD</div>
+                  <div style="font-weight:700;">{flow.weekly_cvd/1e6:+.0f}M
+                    <span style="color:#8b949e;font-size:11px;font-weight:400;"> · 4w {flow.cvd_4w_avg/1e6:+.0f}M</span>
+                  </div>
+                </div>
+                <div>
+                  <div style="color:#8b949e;font-size:10px;text-transform:uppercase;">Z-score 20w</div>
+                  <div style="font-weight:700;">{flow.z_20w:+.2f}σ</div>
+                </div>
+              </div>
+            </div>
+            """)
+
+    # ── MA STACK TABLE ─────────────────────────────────────────────────────
+    st.markdown("### Weekly MA stack — distance from current price + historical touch outcomes")
+    st.caption(
+        "Each row is a weekly-equivalent MA. **Touches in last 6 months** count days "
+        "where price's intraday range crossed the MA. **5d outcome** = average return "
+        "over the next 5 trading days after a touch. **Bias** is auto-derived from "
+        "asymmetry (LONG when ≥70% bounced, SHORT when ≤30% bounced)."
+    )
+
+    _rows_html = ""
+    for s in setups:
+        if s.n_touches_6m == 0:
+            continue
+        _bias_c = {"LONG": "#3fb950", "SHORT": "#f85149", "NEUTRAL": "#8b949e"}[s.bias]
+        _bias_bg = {"LONG": "#0c1f12", "SHORT": "#1f0c0c", "NEUTRAL": "#1c1f24"}[s.bias]
+        _dist_c = "#3fb950" if s.distance_pct < 0 else "#f85149"  # below MA = green opportunity
+        _ret_c = "#3fb950" if s.avg_5d_ret_after_touch >= 0 else "#f85149"
+        _rows_html += f"""
+        <tr style="border-bottom:1px solid #21262d;">
+          <td style="padding:10px 12px;font-weight:700;color:#e6edf3;">{s.ma_label}</td>
+          <td style="padding:10px 12px;color:#e6edf3;text-align:right;">${s.ma_value:,.2f}</td>
+          <td style="padding:10px 12px;text-align:right;color:{_dist_c};font-weight:600;">
+            {s.distance_pct:+.2f}%
+            <div style="color:#8b949e;font-size:11px;font-weight:400;">${s.distance_dollars:+,.2f}</div>
+          </td>
+          <td style="padding:10px 12px;text-align:center;">
+            <span style="background:{_bias_bg};color:{_bias_c};
+                         padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;
+                         letter-spacing:.05em;">{s.bias}</span>
+          </td>
+          <td style="padding:10px 12px;text-align:center;color:#c9d1d9;">{s.n_touches_6m}</td>
+          <td style="padding:10px 12px;text-align:right;color:#c9d1d9;">{s.pct_positive_after_touch:.0f}%</td>
+          <td style="padding:10px 12px;text-align:right;color:{_ret_c};font-weight:700;">
+            {s.avg_5d_ret_after_touch:+.2f}%
+          </td>
+          <td style="padding:10px 12px;text-align:right;color:#3fb950;">+{s.avg_5d_max_up:.2f}%</td>
+          <td style="padding:10px 12px;text-align:right;color:#f85149;">{s.avg_5d_max_dn:.2f}%</td>
+        </tr>
+        """
+
+    st.html(f"""
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                overflow:hidden;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                font-size:13px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead style="background:#161b22;">
+          <tr style="color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.05em;">
+            <th style="padding:10px 12px;text-align:left;">MA</th>
+            <th style="padding:10px 12px;text-align:right;">Level</th>
+            <th style="padding:10px 12px;text-align:right;">Distance</th>
+            <th style="padding:10px 12px;text-align:center;">Bias</th>
+            <th style="padding:10px 12px;text-align:center;">Touches 6m</th>
+            <th style="padding:10px 12px;text-align:right;">% bounced</th>
+            <th style="padding:10px 12px;text-align:right;">Avg 5d ret</th>
+            <th style="padding:10px 12px;text-align:right;">Avg 5d max ↑</th>
+            <th style="padding:10px 12px;text-align:right;">Avg 5d max ↓</th>
+          </tr>
+        </thead>
+        <tbody>
+          {_rows_html}
+        </tbody>
+      </table>
+    </div>
+    """)
+
+    # ── PRICE CHART WITH MA OVERLAYS ───────────────────────────────────────
+    st.markdown("### Price + key weekly MAs (last 12 months)")
+    try:
+        import altair as alt
+        from src.weekly_levels import compute_weekly_mas
+        _mas = compute_weekly_mas(_daily)
+        _chart_window = _daily.index.max() - pd.Timedelta(days=365)
+        _chart_df = _daily[_daily.index >= _chart_window][["Close"]].copy()
+        _chart_df["10w SMA"] = _mas["10w SMA"]
+        _chart_df["20w SMA"] = _mas["20w SMA"]
+        _chart_df["50w SMA"] = _mas["50w SMA"]
+        _chart_df = _chart_df.dropna(subset=["Close"]).reset_index().rename(columns={"index": "date"})
+        _chart_long = _chart_df.melt(id_vars=["date"], var_name="series", value_name="price").dropna()
+
+        _color_scale = alt.Scale(
+            domain=["Close", "10w SMA", "20w SMA", "50w SMA"],
+            range=["#e6edf3", "#79c0ff", "#d29922", "#3fb950"],
+        )
+        _chart = (
+            alt.Chart(_chart_long).mark_line().encode(
+                x=alt.X("date:T", title=None),
+                y=alt.Y("price:Q", title=None,
+                        scale=alt.Scale(zero=False, padding=10)),
+                color=alt.Color("series:N", scale=_color_scale,
+                                legend=alt.Legend(orient="top", title=None)),
+                tooltip=[
+                    alt.Tooltip("date:T"),
+                    alt.Tooltip("series:N"),
+                    alt.Tooltip("price:Q", format="$.2f"),
+                ],
+            )
+            .properties(height=340, background="#0d1117")
+            .configure_view(strokeOpacity=0)
+            .configure_axis(grid=True, gridColor="#21262d", labelColor="#8b949e",
+                            tickColor="#30363d", domainColor="#30363d")
+            .configure_legend(labelColor="#c9d1d9")
+        )
+        st.altair_chart(_chart, use_container_width=True)
+    except Exception as _e:
+        st.caption(f"(chart unavailable: {_e})")
+
+    # ── HONEST CAVEATS ─────────────────────────────────────────────────────
+    st.html("""
+    <div style="background:#1c1f24;border:1px solid #30363d;border-radius:10px;
+                padding:14px 18px;margin-top:18px;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#8b949e;font-size:12px;line-height:1.6;">
+      <strong style="color:#d29922;">Honest sample-size caveat:</strong> The 50w SMA shows the
+      strongest asymmetry (100% bounce rate, +3.93% avg) but with only 2 touches in 6 months —
+      that's a small sample. The 10w/20w MAs have larger samples (15–23 touches) but smaller
+      edges. Treat the 50w SMA as a HIGH-conviction zone <em>when</em> price actually reaches it,
+      not a frequent trade signal.
+      <br><br>
+      <strong style="color:#d29922;">Order-flow note:</strong> The flow score is built from
+      daily bars (close-vs-open direction × volume + closing strength) — it's a
+      <em>proxy</em>, not true intraday tick-derived order flow. Tested on its own it does
+      <strong>not</strong> beat baseline next-week returns, so we use it only as
+      <em>confluence</em> for an MA-touch setup, never as a standalone signal.
+    </div>
+    """)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
