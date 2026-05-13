@@ -255,6 +255,22 @@ def load_gap_analysis(ticker: str, lookback_years: int = 5):
     return df_feat, stats_bucket, stats_dir, stats_wd, today
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_cc_gap_verdicts(tickers: tuple = ("SPY", "QQQ", "IWM", "AAPL")):
+    """Load gap verdict for each Command Center ticker. Returns list of (ticker, TodayGap)."""
+    from src.scanner import fetch_or_load_daily
+    from src.gap_analysis import run_gap_analysis
+    results = []
+    for tkr in tickers:
+        try:
+            daily = fetch_or_load_daily(tkr, data_dir=DATA_DIR, refresh=True)
+            _, sb, _, _, tod = run_gap_analysis(tkr, daily)
+            results.append((tkr, tod))
+        except Exception:
+            pass
+    return results
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_live_quotes(tickers: tuple) -> dict:
     """Fetch live Polygon snapshots for a tuple of tickers.
@@ -582,22 +598,125 @@ if page == "Command Center":
     trade_tickers = [r.ticker for r in rows if r.signal in ("GO_JACKPOT", "GO_ULTRA_JACKPOT")]
     hot_tickers   = [r.ticker for r in rows if r.signal == "GO_HOT"]
 
-    trade_tickers_html = (
-        f'<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);'
-        f'font-size:12px;color:#8b949e;">Trade: <strong style="color:#3fb950;">'
-        f'{", ".join(trade_tickers)}</strong></div>'
-    ) if trade_tickers else ""
+    # ── Composite verdict synthesis ───────────────────────────────────────────
+    _cc_gap_rows = load_cc_gap_verdicts()
+    _gap_active  = [(t, g) for t, g in _cc_gap_rows if g.signal in ("WATCH_FILL", "NEAR_FILL")]
+    _gap_best    = (max(_gap_active,
+                        key=lambda x: {"WATCH_FILL": 2, "NEAR_FILL": 1}.get(x[1].signal, 0))
+                    if _gap_active else None)
+
+    _dte_verd = load_0dte_alert("SPY")
+    _dte_vs   = _dte_verd.get("status", "UNAVAILABLE")
+    if not _ph["is_open"]:
+        _dte_vs = "SESSION_CLOSED"
+
+    _ml_active  = sig in ("GO_JACKPOT", "GO_ULTRA_JACKPOT", "GO_HOT")
+    _dte_active = (_dte_vs == "ENTRY_OPEN")
+    _n_plays    = sum([_ml_active, bool(_gap_best), _dte_active])
+
+    if _n_plays >= 3:
+        _plays_badge = (
+            '<span style="background:#ffd633;color:#0c1117;font-size:11px;font-weight:800;'
+            'padding:3px 10px;border-radius:12px;letter-spacing:.08em;">⚡ '
+            + str(_n_plays) + ' PLAYS ACTIVE</span>')
+    elif _n_plays == 2:
+        _plays_badge = (
+            '<span style="background:#3fb950;color:#0c1117;font-size:11px;font-weight:800;'
+            'padding:3px 10px;border-radius:12px;letter-spacing:.08em;">⚡ 2 PLAYS ACTIVE</span>')
+    elif _n_plays == 1:
+        _plays_badge = (
+            '<span style="background:rgba(88,166,255,0.15);color:#58a6ff;font-size:11px;'
+            'font-weight:700;padding:3px 10px;border-radius:12px;'
+            'border:1px solid rgba(88,166,255,0.3);">1 PLAY ACTIVE</span>')
+    else:
+        _plays_badge = ""
+
+    # ML tile content
+    _ml_bg = {"GO_ULTRA_JACKPOT": "rgba(255,214,51,0.08)", "GO_JACKPOT": "rgba(63,185,80,0.08)",
+               "GO_HOT": "rgba(210,153,34,0.08)", "SKIP": "rgba(139,148,158,0.04)"}.get(
+               sig, "rgba(139,148,158,0.04)")
+    if trade_tickers:
+        _ml_detail = ('Trade: <strong style="color:#3fb950;">'
+                      + ", ".join(trade_tickers) + "</strong>")
+    elif hot_tickers:
+        _ml_detail = ('Watch: <strong style="color:#d29922;">'
+                      + ", ".join(hot_tickers) + "</strong>")
+    else:
+        _ml_detail = '<span style="color:#6e7681;">No ML trade signal today</span>'
+
+    # Gap tile content
+    if _gap_best:
+        _gbt, _gbg = _gap_best
+        _gap_tb  = "#3fb950" if _gbg.signal == "WATCH_FILL" else "#d29922"
+        _gap_tbg = ("rgba(63,185,80,0.06)" if _gbg.signal == "WATCH_FILL"
+                    else "rgba(210,153,34,0.06)")
+        _gdir    = "↓ GAP DOWN" if _gbg.gap_dir == "down" else "↑ GAP UP"
+        _gact    = "BUY CALLS" if _gbg.gap_dir == "down" else "BUY PUTS"
+        _gact_c  = "#3fb950" if _gbg.gap_dir == "down" else "#f85149"
+        _gfill   = (f"{_gbg.hist_fill_rate * 100:.0f}% hist. fill rate"
+                    if _gbg.hist_fill_rate else "")
+        _gap_head = (f'<div style="font-size:14px;font-weight:800;color:{_gap_tb};">'
+                     f'{_gdir} · {_gbt}</div>')
+        _gap_det  = (f'<strong style="color:{_gact_c};">{_gact}</strong>'
+                     f' &nbsp;·&nbsp; {_gbg.gap_pct * 100:+.2f}% gap'
+                     + (f' &nbsp;·&nbsp; {_gfill}' if _gfill else ""))
+    else:
+        _gap_tb   = "#30363d"
+        _gap_tbg  = "rgba(139,148,158,0.04)"
+        _gap_head = '<div style="font-size:14px;font-weight:800;color:#6e7681;">NO GAP TODAY</div>'
+        _gap_det  = (f'<span style="color:#6e7681;">{len(_cc_gap_rows)} tickers opened near '
+                     "yesterday's close</span>")
+
+    # 0DTE tile content
+    if _dte_vs == "ENTRY_OPEN":
+        _dte_tb   = "#f85149"
+        _dte_tbg  = "rgba(248,81,73,0.06)"
+        _drop     = _dte_verd.get("drop_pts") or 0
+        _dte_head = '<div style="font-size:14px;font-weight:800;color:#f85149;">🎯 ENTRY OPEN</div>'
+        _dte_det  = (f'<strong style="color:#3fb950;">BUY CALLS</strong>'
+                     f' &nbsp;·&nbsp; SPY −{_drop:.1f} pts from open')
+    elif _dte_vs == "APPROACHING":
+        _dte_tb   = "#d29922"
+        _dte_tbg  = "rgba(210,153,34,0.06)"
+        _drop     = _dte_verd.get("drop_pts") or 0
+        _dte_head = '<div style="font-size:14px;font-weight:800;color:#d29922;">⚡ APPROACHING</div>'
+        _dte_det  = f'SPY −{_drop:.1f} pts · nearing entry threshold'
+    elif _dte_vs == "SESSION_CLOSED":
+        _dte_tb   = "#30363d"
+        _dte_tbg  = "rgba(139,148,158,0.04)"
+        _dte_head = ('<div style="font-size:14px;font-weight:800;color:#6e7681;">'
+                     'SESSION CLOSED</div>')
+        _d_open   = _dte_verd.get("day_open") or 0
+        _dte_det  = (f'<span style="color:#6e7681;">Final SPY open ${_d_open:.2f} · '
+                     'Opens again 9:30 AM ET</span>' if _d_open else
+                     '<span style="color:#6e7681;">Opens again 9:30 AM ET</span>')
+    else:
+        _dte_tb   = "#30363d"
+        _dte_tbg  = "rgba(139,148,158,0.04)"
+        _dte_head = '<div style="font-size:14px;font-weight:800;color:#6e7681;">QUIET</div>'
+        if _ph["is_open"]:
+            _d_open  = _dte_verd.get("day_open") or 0
+            _dte_det = (f'<span style="color:#6e7681;">SPY open ${_d_open:.2f} · '
+                        'No reversal setup yet</span>' if _d_open else
+                        '<span style="color:#6e7681;">No reversal setup active</span>')
+        else:
+            _dte_det = ('<span style="color:#6e7681;">'
+                        'Activates at next market open (9:30 AM ET)</span>')
 
     st.html(
         f"""
         <div style="background:{hero_bg};border:2px solid {hero_border};
                     border-radius:16px;padding:28px 32px;margin-bottom:8px;
                     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Arial,sans-serif;">
+
           <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
-              <div style="color:#8b949e;font-size:11px;letter-spacing:.14em;
-                          text-transform:uppercase;font-weight:700;margin-bottom:8px;">
-                {datetime.now().strftime('%A, %B %d')} · Today's Verdict
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                <div style="color:#8b949e;font-size:11px;letter-spacing:.14em;
+                            text-transform:uppercase;font-weight:700;">
+                  {datetime.now().strftime('%A, %B %d')} · Today's Verdict
+                </div>
+                {_plays_badge}
               </div>
               <div style="font-size:38px;font-weight:800;color:{hero_border};
                           margin-bottom:10px;line-height:1;">{signal_label(sig)}</div>
@@ -614,7 +733,40 @@ if page == "Command Center":
               </div>
             </div>
           </div>
-          {trade_tickers_html}
+
+          <div style="margin-top:18px;padding-top:16px;
+                      border-top:1px solid rgba(255,255,255,0.08);
+                      display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+
+            <div style="background:{_ml_bg};border:1px solid {hero_border};
+                        border-radius:10px;padding:12px 14px;">
+              <div style="font-size:9px;font-weight:800;text-transform:uppercase;
+                          color:#6e7681;letter-spacing:.1em;margin-bottom:8px;">
+                ML JACKPOT SIGNAL</div>
+              <div style="font-size:14px;font-weight:800;color:{hero_border};">
+                {signal_label(sig)}</div>
+              <div style="font-size:11px;color:#8b949e;margin-top:6px;">{_ml_detail}</div>
+            </div>
+
+            <div style="background:{_gap_tbg};border:1px solid {_gap_tb};
+                        border-radius:10px;padding:12px 14px;">
+              <div style="font-size:9px;font-weight:800;text-transform:uppercase;
+                          color:#6e7681;letter-spacing:.1em;margin-bottom:8px;">
+                GAP REVERSAL</div>
+              {_gap_head}
+              <div style="font-size:11px;color:#8b949e;margin-top:6px;">{_gap_det}</div>
+            </div>
+
+            <div style="background:{_dte_tbg};border:1px solid {_dte_tb};
+                        border-radius:10px;padding:12px 14px;">
+              <div style="font-size:9px;font-weight:800;text-transform:uppercase;
+                          color:#6e7681;letter-spacing:.1em;margin-bottom:8px;">
+                0DTE LOTTERY</div>
+              {_dte_head}
+              <div style="font-size:11px;color:#8b949e;margin-top:6px;">{_dte_det}</div>
+            </div>
+
+          </div>
         </div>
         """
     )
