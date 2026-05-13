@@ -513,7 +513,151 @@ def classify_signal(p_vol: float, p_pnl: float, p_weekly: float,
     return "SKIP"
 
 
-def score_jackpot_one(
+# ---------------------------------------------------------------------------
+# Walk-forward training (leakage-free)
+# ---------------------------------------------------------------------------
+# The original load_or_train_* functions train one model on the FULL daily
+# history and then score the most recent day with that same model. When the
+# most recent day is itself an extreme outlier (e.g. 2025-04-09 SPY +11.18%),
+# its label leaks into the training set and inflates the model's confidence
+# on similar pre-market setups. Walk-forward retraining cuts the training
+# window at the previous Friday, so any prediction on day T uses ZERO data
+# from T or later.
+#
+# The cache key is the cutoff Friday, so within a given week every weekday
+# reuses the same three models — at most ~52 model-trainings per ticker per
+# year per kind (~624/yr across the 4-ticker × 3-model universe).
+
+WF_SUBDIR = "wf"
+WF_CACHE_KEEP_PER_KEY = 12  # keep most recent N cutoffs per (ticker, kind)
+
+
+def _walkforward_cutoff(target_date: pd.Timestamp) -> pd.Timestamp:
+    """Last Friday STRICTLY before `target_date`.
+
+    Examples (target_date weekday → cutoff):
+      Mon → previous Friday (3 days back)
+      Wed → previous Friday (5 days back)
+      Fri → previous Friday (7 days back)
+    """
+    target = pd.Timestamp(target_date).normalize()
+    # Days to subtract to reach the prior Friday
+    offset = (target.weekday() - 4) % 7
+    if offset == 0:
+        offset = 7  # if target itself is Friday, go back a full week
+    return target - pd.Timedelta(days=offset)
+
+
+def _data_fingerprint(daily_train: pd.DataFrame) -> str:
+    """Short fingerprint of the training slice so revisions to historical
+    OHLCV (Polygon corrections, dividend adjustments) invalidate the cache."""
+    n = len(daily_train)
+    last_close = float(daily_train["Close"].iloc[-1])
+    last_date = pd.Timestamp(daily_train.index[-1]).strftime("%Y%m%d")
+    # 8-char hex of n + last_close + last_date — collision risk is negligible
+    import hashlib
+    raw = f"{n}|{last_close:.4f}|{last_date}".encode()
+    return hashlib.sha1(raw).hexdigest()[:8]
+
+
+def _wf_model_path(ticker: str, cutoff: pd.Timestamp, kind: str,
+                   model_dir: Path = DEFAULT_MODEL_DIR,
+                   data_fp: str = "any") -> Path:
+    """Cache path for a walk-forward model. kind ∈ {vol,pnl,weekly}.
+    `data_fp` makes the cache invalidate on data revisions."""
+    safe = _safe_ticker_filename(ticker)
+    cdate = pd.Timestamp(cutoff).strftime("%Y%m%d")
+    return model_dir / WF_SUBDIR / f"{safe}_{cdate}_{data_fp}_{kind}.joblib"
+
+
+def _prune_wf_cache(ticker: str, kind: str, model_dir: Path,
+                    keep: int = WF_CACHE_KEEP_PER_KEY) -> None:
+    """Keep only the most recent `keep` cutoffs per (ticker, kind).
+    Filenames are `{safe_ticker}_{cutoff}_{fp}_{kind}.joblib`; we sort by
+    cutoff (the YYYYMMDD slug) and unlink the rest."""
+    safe = _safe_ticker_filename(ticker)
+    wf_dir = model_dir / WF_SUBDIR
+    if not wf_dir.exists():
+        return
+    matches = sorted(
+        wf_dir.glob(f"{safe}_*_*_{kind}.joblib"),
+        key=lambda p: p.name.split("_")[1],  # cutoff slug
+        reverse=True,
+    )
+    for stale in matches[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def train_or_load_walkforward_models(
+    ticker: str,
+    cutoff: pd.Timestamp,
+    daily_full: pd.DataFrame,
+    model_dir: Path = DEFAULT_MODEL_DIR,
+    retrain: bool = False,
+) -> dict:
+    """Train/load the three walk-forward models for `ticker` with the strict
+    cutoff. `daily_full` must be the full daily DataFrame (we slice it
+    internally to ≤ cutoff for training).
+
+    Returns a dict::
+        {vol_model, pnl_model, weekly_model,
+         vol_cols, pnl_cols, weekly_cols,
+         premium_pct, weekly_premium_pct, vol_threshold}
+    """
+    (model_dir / WF_SUBDIR).mkdir(parents=True, exist_ok=True)
+    cutoff = pd.Timestamp(cutoff).normalize()
+    daily_full = daily_full.copy()
+    # Normalise index to date (lose tz/intraday) for clean slicing
+    if daily_full.index.tz is not None:
+        daily_full.index = daily_full.index.tz_localize(None)
+    daily_full.index = pd.to_datetime(daily_full.index).normalize()
+
+    daily_train = daily_full[daily_full.index <= cutoff]
+    if len(daily_train) < MIN_TRAIN_ROWS + 50:
+        raise RuntimeError(
+            f"{ticker}: only {len(daily_train)} training rows ≤ {cutoff.date()} "
+            f"(need ≥ {MIN_TRAIN_ROWS + 50})"
+        )
+
+    feats_train = build_features(daily_train)
+    X_vol, y_vol, vol_thresh = prepare_xy(feats_train, volatile_quantile=0.80)
+    if len(X_vol) < MIN_TRAIN_ROWS:
+        raise RuntimeError(f"{ticker}: only {len(X_vol)} vol-feature rows ≤ {cutoff.date()}")
+    premium_pct = estimate_premium_pct(daily_train)
+    weekly_premium_pct = estimate_weekly_premium_pct(daily_train)
+    X_pnl, y_pnl, _ = _prepare_pnl_xy(feats_train, daily_train, premium_pct)
+    X_wk, y_wk, _ = _prepare_weekly_xy(feats_train, daily_train, weekly_premium_pct)
+
+    data_fp = _data_fingerprint(daily_train)
+    out = {
+        "vol_cols": list(X_vol.columns),
+        "pnl_cols": list(X_pnl.columns),
+        "weekly_cols": list(X_wk.columns),
+        "premium_pct": premium_pct,
+        "weekly_premium_pct": weekly_premium_pct,
+        "vol_threshold": vol_thresh,
+        "data_fingerprint": data_fp,
+    }
+
+    for kind, X, y in [("vol", X_vol, y_vol), ("pnl", X_pnl, y_pnl), ("weekly", X_wk, y_wk)]:
+        path = _wf_model_path(ticker, cutoff, kind, model_dir, data_fp=data_fp)
+        if path.exists() and not retrain:
+            out[f"{kind}_model"] = joblib.load(path)
+            continue
+        logger.info("Training walk-forward %s model for %s (cutoff=%s, fp=%s) on %d rows",
+                    kind, ticker, cutoff.date(), data_fp, len(X))
+        model = fit_full(X, y, make_logreg)
+        joblib.dump(model, path)
+        out[f"{kind}_model"] = model
+        _prune_wf_cache(ticker, kind, model_dir)
+
+    return out
+
+
+def score_jackpot_one_walkforward(
     ticker: str,
     refresh_data: bool = True,
     retrain: bool = False,
@@ -523,7 +667,118 @@ def score_jackpot_one(
     data_fresh_hours: float = DATA_FRESH_HOURS_DEFAULT,
     history_years: int = HISTORY_YEARS_DEFAULT,
 ) -> JackpotRow:
-    """Score a single ticker through all three models. Used by the dashboard."""
+    """Strict walk-forward scoring of `ticker` for the latest available
+    session. Models are retrained at the last-Friday cutoff so the
+    prediction uses ZERO knowledge of the day being scored or anything
+    later.
+    """
+    daily = fetch_or_load_daily(
+        ticker, data_dir=data_dir, refresh=refresh_data,
+        data_fresh_hours=data_fresh_hours, history_years=history_years,
+    )
+    if len(daily) < MIN_TRAIN_ROWS + 50:
+        raise RuntimeError(f"{ticker}: only {len(daily)} daily rows.")
+
+    daily = daily.copy()
+    if daily.index.tz is not None:
+        daily.index = daily.index.tz_localize(None)
+    daily.index = pd.to_datetime(daily.index).normalize()
+    target_date = daily.index.max()
+    cutoff = _walkforward_cutoff(target_date)
+
+    bundle = train_or_load_walkforward_models(
+        ticker, cutoff, daily, model_dir=model_dir, retrain=retrain,
+    )
+
+    # Build features on the FULL daily slice; the row at target_date uses only
+    # lagged (≤ target_date - 1) information by construction of build_features.
+    feats = build_features(daily)
+    if target_date not in feats.index:
+        raise RuntimeError(f"{ticker}: target {target_date.date()} missing from feature panel")
+
+    row = feats.loc[[target_date]].copy()
+    # build_features computes days_in_month / days_left_in_month from the
+    # observed slice — for the LAST row of any slice, those calendar booleans
+    # are mechanically true even when the calendar disagrees. Zero them on
+    # the prediction row to avoid spurious end-of-month signals.
+    for spurious in ("is_turn_of_month", "is_last_trading_day_of_month",
+                     "is_first_trading_day_of_month"):
+        if spurious in row.columns:
+            row[spurious] = 0
+    base = row[NUMERIC_FEATURES + BINARY_FEATURES + ORDINAL_FEATURES].astype(float)
+    wd_dummies = _one_hot_weekday(row["weekday"])
+    X_pred_vol = pd.concat([base, wd_dummies], axis=1).reindex(columns=bundle["vol_cols"], fill_value=0.0)
+    X_pred_pnl = pd.concat([base, wd_dummies], axis=1).reindex(columns=bundle["pnl_cols"], fill_value=0.0)
+    X_pred_wk  = pd.concat([base, wd_dummies], axis=1).reindex(columns=bundle["weekly_cols"], fill_value=0.0)
+
+    p_vol = float(score_dataframe(bundle["vol_model"], X_pred_vol).iloc[0])
+    p_pnl = float(score_dataframe(bundle["pnl_model"], X_pred_pnl).iloc[0])
+    p_weekly = float(score_dataframe(bundle["weekly_model"], X_pred_wk).iloc[0])
+
+    last_close = float(daily["Close"].iloc[-1])
+    prev_close = float(daily["Close"].iloc[-2]) if len(daily) >= 2 else float("nan")
+    pct_change = (last_close / prev_close - 1.0) if not pd.isna(prev_close) else float("nan")
+
+    # Stats are descriptive (per-ticker historical jackpot frequency); fine to
+    # compute on full history — they are NOT used as model input.
+    stats = load_or_compute_stats(
+        ticker, daily, feats, bundle["premium_pct"], bundle["weekly_premium_pct"],
+        model_dir=model_dir, refresh=refresh_stats,
+    )
+    # Vol classifier base rate from the TRAINING slice (honest)
+    base_rate_vol = float((feats.loc[feats.index <= cutoff, "range_pct"]
+                          .dropna() >= bundle["vol_threshold"]).mean())
+
+    return JackpotRow(
+        ticker=ticker.upper(),
+        as_of=target_date,
+        last_close=last_close,
+        prev_close=prev_close,
+        pct_change=float(pct_change),
+        p_vol=p_vol,
+        p_pnl=p_pnl,
+        p_weekly=p_weekly,
+        signal=classify_signal(p_vol, p_pnl, p_weekly),
+        premium_pct=bundle["premium_pct"],
+        weekly_premium_pct=bundle["weekly_premium_pct"],
+        estimated_premium_dollars=last_close * bundle["premium_pct"],
+        estimated_weekly_premium_dollars=last_close * bundle["weekly_premium_pct"],
+        base_rate_vol=base_rate_vol,
+        n_jackpot_history=int(stats.get("n_jackpot", 0)),
+        trades_per_year=float(stats.get("trades_per_year", 0.0)),
+        win_rate_history=float(stats.get("win_rate", float("nan"))),
+        avg_ret_history=float(stats.get("avg_ret", float("nan"))),
+        n_ultra_history=int(stats.get("n_ultra", 0)),
+        ultra_trades_per_year=float(stats.get("ultra_trades_per_year", 0.0)),
+        ultra_win_rate_history=float(stats.get("ultra_win_rate", float("nan"))),
+        ultra_avg_ret_history=float(stats.get("ultra_avg_ret", float("nan"))),
+        ultra_weekly_avg_ret_history=float(stats.get("ultra_weekly_avg_ret", float("nan"))),
+    )
+
+
+def score_jackpot_one(
+    ticker: str,
+    refresh_data: bool = True,
+    retrain: bool = False,
+    refresh_stats: bool = False,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    model_dir: Path = DEFAULT_MODEL_DIR,
+    data_fresh_hours: float = DATA_FRESH_HOURS_DEFAULT,
+    history_years: int = HISTORY_YEARS_DEFAULT,
+    walk_forward: bool = False,
+) -> JackpotRow:
+    """Score a single ticker through all three models. Used by the dashboard.
+
+    When `walk_forward=True`, routes to `score_jackpot_one_walkforward`,
+    which retrains at the prior-Friday cutoff to eliminate label leakage.
+    """
+    if walk_forward:
+        return score_jackpot_one_walkforward(
+            ticker, refresh_data=refresh_data, retrain=retrain,
+            refresh_stats=refresh_stats, data_dir=data_dir,
+            model_dir=model_dir, data_fresh_hours=data_fresh_hours,
+            history_years=history_years,
+        )
     daily = fetch_or_load_daily(
         ticker,
         data_dir=data_dir,
@@ -692,6 +947,7 @@ def scan_jackpot_universe(
     model_dir: Path = DEFAULT_MODEL_DIR,
     data_fresh_hours: float = DATA_FRESH_HOURS_DEFAULT,
     history_years: int = HISTORY_YEARS_DEFAULT,
+    walk_forward: bool = False,
 ) -> tuple[list[JackpotRow], list[dict]]:
     rows: list[JackpotRow] = []
     errors: list[dict] = []
@@ -707,6 +963,7 @@ def scan_jackpot_universe(
                     model_dir=model_dir,
                     data_fresh_hours=data_fresh_hours,
                     history_years=history_years,
+                    walk_forward=walk_forward,
                 )
             )
         except Exception as exc:

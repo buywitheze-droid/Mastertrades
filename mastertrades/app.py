@@ -203,12 +203,20 @@ def section(title: str, subtitle: str = ""):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_jackpot_scan(tickers=("SPY", "QQQ", "IWM", "AAPL")):
+    """ML jackpot scan with leakage-free walk-forward training.
+
+    Each ticker's models are trained on data ≤ the prior-Friday cutoff,
+    so today's prediction never sees today's outcome. Models are cached
+    per (ticker, cutoff) under models/wf/ — within a given week the same
+    three models are reused across all weekdays.
+    """
     from src.jackpot_scanner import scan_jackpot_universe
     rows, errors = scan_jackpot_universe(
         tickers=list(tickers),
         data_dir=DATA_DIR,
         model_dir=MODEL_DIR,
         refresh_data=True,
+        walk_forward=True,
     )
     return rows, errors
 
