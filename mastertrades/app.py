@@ -1826,6 +1826,251 @@ if page == "Command Center":
                   </div>
                 </div>""")
 
+    # ── 6-Month Full Trading Simulation ────────────────────────────────────────
+    st.markdown("---")
+    section("6-Month Full Simulation",
+            f"Every signal, every day — ${equity_input:,.0f} starting balance over 6 months")
+
+    # Signal frequency: estimated actionable trade days per month based on
+    # historical ML model calibration (~21 trading days/month)
+    _6M_MIX = [
+        ("GO_ULTRA_JACKPOT", 0.5,  "#ffd633", "ULTRA JACKPOT",  "Both models at peak confidence — rarest"),
+        ("GO_JACKPOT",       2.0,  "#3fb950", "JACKPOT",         "Both models fire — core trade day"),
+        ("GO_HOT",           3.0,  "#d29922", "HOT",             "Vol model fires — elevated, smaller size"),
+        ("ENTRY_OPEN",       3.0,  "#f85149", "0DTE LOTTERY",    "SPY 3+ pt intraday drop — reversal play"),
+    ]
+    _6M_TOTAL = sum(c for _, c, _, _, _ in _6M_MIX)
+
+    # Signal mix strip
+    _mix_html = ""
+    for _s6, _c6, _col6, _lbl6, _note6 in _6M_MIX:
+        _t6 = TIERS.get(_s6)
+        if _t6:
+            _mix_html += f"""
+            <div style="background:#161b22;border:1px solid {_col6}44;border-radius:10px;
+                        padding:12px 14px;flex:1;min-width:130px;">
+              <div style="font-size:9px;font-weight:800;text-transform:uppercase;
+                          color:{_col6};letter-spacing:.1em;margin-bottom:6px;">{_lbl6}</div>
+              <div style="font-size:24px;font-weight:900;color:#e6edf3;">
+                {_c6}/mo</div>
+              <div style="font-size:10px;color:#8b949e;margin-top:5px;line-height:1.5;">
+                {int(_t6.win_prob*100)}% win · {int(_t6.avg_win_mult*100-100)}% avg gain<br>
+                {int(_t6.alloc_pct*100)}% allocation per trade</div>
+            </div>"""
+
+    st.html(f"""
+    <div style="margin-bottom:16px;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="color:#8b949e;font-size:11px;margin-bottom:10px;">
+        Estimated <strong style="color:#e6edf3;">{_6M_TOTAL:.0f} trade actions/month</strong>
+        out of ~21 trading days (~{_6M_TOTAL/21*100:.0f}% of days are actionable across all strategies)
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">{_mix_html}</div>
+    </div>""")
+
+    # ── Run 3-path simulation ────────────────────────────────────────────────
+    _s6_ev   = float(equity_input)
+    _s6_win  = float(equity_input)
+    _s6_lose = float(equity_input)
+    _s6_data = []   # (month, ev, win, lose, monthly_gain_ev)
+
+    for _m6 in range(1, 7):
+        _m6_start = _s6_ev
+
+        for _sig6, _cnt6, _, _, _ in _6M_MIX:
+            _int6  = int(_cnt6)
+            _frac6 = _cnt6 - _int6
+
+            # EV path (fractional trades use proportional EV)
+            for _ in range(_int6):
+                _r6 = _ra(_sig6, _s6_ev)
+                if _r6:
+                    _s6_ev = max(_s6_ev + _r6.expected_gain, 0.0)
+            if _frac6 > 0:
+                _r6 = _ra(_sig6, _s6_ev)
+                if _r6:
+                    _s6_ev = max(_s6_ev + _r6.expected_gain * _frac6, 0.0)
+
+            # Win-all path
+            for _ in range(round(_cnt6)):
+                _r6 = _ra(_sig6, _s6_win)
+                if _r6:
+                    _s6_win += _r6.win_scenario
+
+            # Lose-all path (Kelly: equity shrinks but stays > 0)
+            for _ in range(round(_cnt6)):
+                _r6 = _ra(_sig6, _s6_lose)
+                if _r6:
+                    _s6_lose = max(_s6_lose - _r6.alloc_dollars, 0.0)
+
+        _s6_data.append((
+            _m6,
+            round(_s6_ev, 2),
+            round(_s6_win, 2),
+            round(_s6_lose, 2),
+            round(_s6_ev - _m6_start, 2),
+        ))
+
+    # ── Build monthly table rows ─────────────────────────────────────────────
+    _month_abbr = ["Jan","Feb","Mar","Apr","May","Jun",
+                   "Jul","Aug","Sep","Oct","Nov","Dec"]
+    _now_month  = datetime.now().month - 1   # 0-indexed
+    _now_year   = datetime.now().year
+
+    _tbl6 = f"""
+        <tr>
+          <td style="padding:8px 6px;color:#6e7681;">Start</td>
+          <td style="padding:8px 6px;text-align:right;font-weight:700;
+                     color:#e6edf3;">${equity_input:,.0f}</td>
+          <td style="padding:8px 6px;text-align:right;color:#3fb950;">
+            ${equity_input:,.0f}</td>
+          <td style="padding:8px 6px;text-align:right;color:#f85149;">
+            ${equity_input:,.0f}</td>
+          <td style="padding:8px 6px;text-align:right;color:#6e7681;">—</td>
+        </tr>"""
+
+    _prev6_ev = float(equity_input)
+    for _m6n, _ev6, _win6, _lose6, _gain6 in _s6_data:
+        _mname = _month_abbr[(_now_month + _m6n) % 12]
+        _yr    = _now_year + (_now_month + _m6n) // 12
+        _ev_c6 = "#3fb950" if _ev6 >= equity_input else "#f85149"
+        _g_c6  = "#3fb950" if _gain6 >= 0 else "#f85149"
+        _g_pct = (_gain6 / _prev6_ev * 100) if _prev6_ev > 0 else 0
+
+        # Milestone badge
+        _ms6_tag = ""
+        for _ms6v in [1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000]:
+            if _prev6_ev < _ms6v <= _ev6:
+                _ms6_lbl = {1_000:"$1k",5_000:"$5k",10_000:"$10k",50_000:"$50k",
+                            100_000:"$100k",500_000:"$500k",1_000_000:"$1M"}.get(_ms6v,"")
+                _ms6_tag = (f'<span style="background:#ffd633;color:#0d1117;font-size:8px;'
+                            f'font-weight:800;padding:1px 5px;border-radius:3px;'
+                            f'margin-left:5px;">{_ms6_lbl} ✓</span>')
+                break
+
+        _tbl6 += f"""
+        <tr style="border-bottom:1px solid #21262d;">
+          <td style="padding:8px 6px;color:#8b949e;font-weight:600;">
+            {_mname} {_yr}</td>
+          <td style="padding:8px 6px;text-align:right;font-weight:800;color:{_ev_c6};">
+            ${_ev6:,.0f}{_ms6_tag}</td>
+          <td style="padding:8px 6px;text-align:right;color:#3fb950;">
+            ${_win6:,.0f}</td>
+          <td style="padding:8px 6px;text-align:right;color:#f85149;">
+            ${_lose6:,.0f}</td>
+          <td style="padding:8px 6px;text-align:right;font-weight:700;color:{_g_c6};">
+            +${_gain6:,.0f}
+            <span style="font-size:10px;color:{_g_c6};opacity:.7;">
+              (+{_g_pct:.0f}%)</span></td>
+        </tr>"""
+        _prev6_ev = _ev6
+
+    # ── Final outcome numbers ────────────────────────────────────────────────
+    _fin = _s6_data[-1]
+    _fin_ev, _fin_win, _fin_lose = _fin[1], _fin[2], _fin[3]
+    _mult_ev  = _fin_ev   / equity_input
+    _mult_win = _fin_win  / equity_input
+    _remain_lose_pct = _fin_lose / equity_input * 100
+
+    def _fmt_big(v: float) -> str:
+        if v >= 1_000_000:
+            return f"${v/1_000_000:.2f}M"
+        if v >= 1_000:
+            return f"${v:,.0f}"
+        return f"${v:.2f}"
+
+    st.html(f"""
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:14px;
+                padding:22px 26px;margin-bottom:4px;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+
+      <!-- Monthly breakdown table -->
+      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                  letter-spacing:.1em;margin-bottom:12px;">Month-by-Month Equity</div>
+      <table style="width:100%;border-collapse:collapse;
+                    font-size:13px;font-variant-numeric:tabular-nums;margin-bottom:22px;">
+        <thead>
+          <tr style="border-bottom:2px solid #30363d;">
+            <th style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                       letter-spacing:.06em;padding:6px 6px;font-weight:700;text-align:left;">
+              Month</th>
+            <th style="color:#58a6ff;font-size:10px;text-transform:uppercase;
+                       letter-spacing:.06em;padding:6px 6px;font-weight:700;text-align:right;">
+              Expected (EV)</th>
+            <th style="color:#3fb950;font-size:10px;text-transform:uppercase;
+                       letter-spacing:.06em;padding:6px 6px;font-weight:700;text-align:right;">
+              Best Case</th>
+            <th style="color:#f85149;font-size:10px;text-transform:uppercase;
+                       letter-spacing:.06em;padding:6px 6px;font-weight:700;text-align:right;">
+              Worst Case</th>
+            <th style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                       letter-spacing:.06em;padding:6px 6px;font-weight:700;text-align:right;">
+              EV Monthly Gain</th>
+          </tr>
+        </thead>
+        <tbody style="line-height:1.9;">{_tbl6}</tbody>
+      </table>
+
+      <!-- 6-month outcome cards -->
+      <div style="color:#8b949e;font-size:10px;text-transform:uppercase;
+                  letter-spacing:.1em;margin-bottom:12px;">6-Month Final Outcome</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;
+                  margin-bottom:18px;">
+
+        <div style="background:linear-gradient(135deg,#0c1a2e,#0d1f36);
+                    border:2px solid #58a6ff;border-radius:12px;padding:20px;text-align:center;">
+          <div style="color:#58a6ff;font-size:10px;font-weight:800;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:10px;">Expected Path (EV model)</div>
+          <div style="font-size:36px;font-weight:900;color:#fff;line-height:1;">
+            {_fmt_big(_fin_ev)}</div>
+          <div style="color:#58a6ff;font-size:15px;font-weight:800;margin-top:6px;">
+            {_mult_ev:.0f}× starting equity</div>
+          <div style="color:#8b949e;font-size:11px;margin-top:4px;">
+            +{_fmt_big(_fin_ev - equity_input)} net gain</div>
+        </div>
+
+        <div style="background:linear-gradient(135deg,#0d1f14,#0e2218);
+                    border:2px solid #3fb950;border-radius:12px;padding:20px;text-align:center;">
+          <div style="color:#3fb950;font-size:10px;font-weight:800;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:10px;">Best Case (every win)</div>
+          <div style="font-size:36px;font-weight:900;color:#fff;line-height:1;">
+            {_fmt_big(_fin_win)}</div>
+          <div style="color:#3fb950;font-size:15px;font-weight:800;margin-top:6px;">
+            {_mult_win:.0f}× starting equity</div>
+          <div style="color:#8b949e;font-size:11px;margin-top:4px;">
+            +{_fmt_big(_fin_win - equity_input)} net gain</div>
+        </div>
+
+        <div style="background:linear-gradient(135deg,#1a0d0d,#200f0f);
+                    border:2px solid #f85149;border-radius:12px;padding:20px;text-align:center;">
+          <div style="color:#f85149;font-size:10px;font-weight:800;text-transform:uppercase;
+                      letter-spacing:.1em;margin-bottom:10px;">Worst Case (every loss)</div>
+          <div style="font-size:36px;font-weight:900;color:#fff;line-height:1;">
+            {_fmt_big(_fin_lose)}</div>
+          <div style="color:#f85149;font-size:15px;font-weight:800;margin-top:6px;">
+            {_remain_lose_pct:.1f}% of equity remains</div>
+          <div style="color:#8b949e;font-size:11px;margin-top:4px;">
+            Kelly sizing preserves capital — never goes to $0</div>
+        </div>
+
+      </div>
+
+      <!-- Disclaimer -->
+      <div style="background:#161b22;border:1px solid #21262d;border-radius:8px;
+                  padding:12px 16px;font-size:11px;color:#6e7681;line-height:1.8;">
+        <strong style="color:#8b949e;">⚠️ Model assumptions behind these numbers:</strong>
+        JACKPOT uses 60% historical win rate × 1000% avg win, 25% allocation per trade.
+        HOT uses 45% win rate × 500% avg win, 15% allocation.
+        0DTE Lottery uses 35% win rate × 800% avg win, 10% allocation.
+        Signal frequency (~{_6M_TOTAL:.0f}/month) is estimated from historical ML calibration.
+        The <strong style="color:#58a6ff;">Expected path</strong> applies EV per trade — it is
+        the mathematical long-run average, not a guarantee.
+        <strong style="color:#e6edf3;">Real results will vary: consecutive losses and consecutive
+        jackpots both happen.</strong>
+        Only risk capital you can afford to lose entirely.
+      </div>
+    </div>""")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE 2: MULTI-TICKER SCANNER
