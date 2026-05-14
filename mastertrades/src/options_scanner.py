@@ -115,6 +115,67 @@ def fetch_0dte_chain(
     return contracts
 
 
+# ── Single contract live snapshot (for trail-stop tracking) ──────────────────
+
+def fetch_option_quote(
+    underlying: str,
+    contract_ticker: str,
+    timeout: int = 10,
+) -> Optional[dict]:
+    """Fetch a live snapshot for ONE option contract.
+
+    Returns a dict with the fields needed by the live trail-stop tracker:
+        {
+          "last_price":   float — last trade price (or mid quote fallback),
+          "day_open":     float,
+          "day_high":     float,   # running high since today's open
+          "day_low":      float,   # running low since today's open
+          "day_close":    float,   # last trade close (== last_price intraday)
+          "bid":          float,
+          "ask":          float,
+          "fetched_at":   datetime ISO string,
+        }
+    Returns None if the snapshot is unavailable (no key, http error, no
+    trades yet, etc.). Callers must handle None gracefully.
+
+    Endpoint: GET /v3/snapshot/options/{underlying}/{contract_ticker}
+    """
+    if not _key():
+        return None
+    url = f"{POLYGON_BASE}/v3/snapshot/options/{underlying.upper()}/{contract_ticker}"
+    try:
+        resp = requests.get(url, params={"apiKey": _key()}, timeout=timeout)
+        resp.raise_for_status()
+    except Exception:
+        return None
+    item = (resp.json() or {}).get("results") or {}
+    day = item.get("day") or {}
+    quote = item.get("last_quote") or {}
+    trade = item.get("last_trade") or {}
+    bid = float(quote.get("bid") or 0.0)
+    ask = float(quote.get("ask") or 0.0)
+    last_trade_price = float(trade.get("price") or 0.0)
+    day_close = float(day.get("close") or 0.0)
+    # Prefer last trade; fall back to mid-quote; fall back to day_close.
+    if last_trade_price > 0:
+        last_price = last_trade_price
+    elif bid > 0 and ask > 0:
+        last_price = (bid + ask) / 2.0
+    else:
+        last_price = day_close
+    from datetime import datetime as _dt
+    return {
+        "last_price": last_price,
+        "day_open":   float(day.get("open")  or 0.0),
+        "day_high":   float(day.get("high")  or 0.0),
+        "day_low":    float(day.get("low")   or 0.0),
+        "day_close":  day_close,
+        "bid":        bid,
+        "ask":        ask,
+        "fetched_at": _dt.now().isoformat(timespec="seconds"),
+    }
+
+
 # ── Analyse chain ─────────────────────────────────────────────────────────────
 
 def analyze_chain(
@@ -176,11 +237,42 @@ class StrikeRecommendation:
     strike: float
     dist_from_low: float        # pts above low
     dist_from_open: float       # pts above open (negative = ITM at open)
-    est_entry_price: float      # estimated call price at current low
+    est_entry_price: float      # algo's entry estimate (= max(day_low, 0.01)).
+                                # Used for ranking math. Can be $0.01 if option
+                                # touched the price floor intraday — DO NOT
+                                # display this as the user-facing entry price;
+                                # use display_entry_price instead.
     est_target_price: float     # if underlying returns to open
-    est_gain_pct: float         # (target - entry) / entry * 100
+    est_gain_pct: float         # (target - est_entry) / est_entry * 100.
+                                # Reflects upside FROM the day's low. Used for
+                                # ranking (matches backtest assumption).
     risk_category: str          # "LOTTERY", "AGGRESSIVE", "MODERATE"
     note: str
+    contract_ticker: str = ""   # Polygon option ticker, e.g. "O:SPY260513C00744000"
+                                # Required for live-quote follow-up (trail stops).
+    leverage_score: float = 0.0 # est_gain_pct × √(1/entry). Empirically picks
+                                # 3× more profitable strikes than est_gain_pct
+                                # alone — see scripts/_strike_strategy_compare.py.
+
+    # ── Display fields (use these in the UI, NOT est_entry_price) ───────────
+    display_entry_price: float = 0.0   # Realistic current-fill estimate.
+                                       # = max(day_close, day_open, day_low, 0.01).
+                                       # Use for: action line, sizing, sell
+                                       # trigger, max-risk display.
+    display_gain_pct: float = 0.0      # Upside from display_entry_price, NOT
+                                       # from intraday low. Honest "what you'll
+                                       # actually capture" estimate.
+
+
+# ── Strike-selection knobs (validated 2026-05-13) ────────────────────────────
+# Backtest: scripts/_strike_strategy_compare.py against 90-day Polygon data
+# proved that a $1 max-premium cap + leverage_score ranking earns
+# +$24,480 vs +$11,402 for the previous "max est_gain_pct alone" picker
+# (115% improvement on $500/trade, 85% win rate vs 72%, profit factor 43×).
+# Bump this only after re-running the backtest.
+
+MAX_PREMIUM_USD = 1.00          # skip strikes priced above this at alert time
+STRIKE_SELECTION_VERSION = "2026-05-13-cap1-leverage-bonus"
 
 
 def recommend_strikes(
@@ -188,27 +280,49 @@ def recommend_strikes(
     underlying_low:    float,
     contracts:         list[OptionContract],
     recovery_target:   Optional[float] = None,
+    max_premium_usd:   Optional[float] = None,
+    apply_leverage_bonus: bool = True,
 ) -> list[StrikeRecommendation]:
     """Given the current intraday low, recommend which call strikes to buy.
 
     recovery_target: expected recovery level (default = open price).
+    max_premium_usd: per-share premium cap. Strikes priced above this at
+                    alert time are SKIPPED. Defaults to MAX_PREMIUM_USD ($1.00),
+                    validated 2026-05-13 against 90-day Polygon backtest.
+    apply_leverage_bonus: when True, populates `leverage_score` with
+                    est_gain_pct × √(1/entry). The dashboard ranks by this
+                    instead of est_gain_pct alone — empirically yields 3×
+                    per-trade P&L by biasing toward cheap, leveraged OTM.
+
     Looks at actual live contract prices from the chain.
     """
     if recovery_target is None:
         recovery_target = underlying_open
+    if max_premium_usd is None:
+        max_premium_usd = MAX_PREMIUM_USD
 
     drop_pts = underlying_open - underlying_low  # positive number
 
     recs: list[StrikeRecommendation] = []
     call_map = {c.strike: c for c in contracts if c.contract_type == "call"}
 
-    # Sweet spot: strikes +1 to +8 pts above the low
+    # Sweet spot: strikes +1 to +9 pts above the low
     for offset in [1, 2, 3, 4, 5, 6, 7, 8, 9]:
         target_strike = round(underlying_low + offset)
         c = call_map.get(target_strike)
         if c is None:
             continue
-        entry  = max(c.day_low, 0.01)  # current price at low
+        entry  = max(c.day_low, 0.01)  # current price at low (for est_gain_pct)
+        # Premium-cap filter: filters on the **actual fill price** the user
+        # will pay (≈ day_open for an alert that fires shortly after open),
+        # NOT on day_low. day_low can spike to $0.01 intraday on any chain,
+        # which would let pricey strikes leak through. day_open matches the
+        # backtest assumption in scripts/_strike_strategy_compare.py and is
+        # what produced the validated +$401/trade · 85% win-rate result.
+        # Falls back to day_low only if day_open is missing (defensive).
+        cap_ref = c.day_open if c.day_open and c.day_open > 0 else entry
+        if cap_ref > max_premium_usd:
+            continue
         dist_open = target_strike - underlying_open
 
         # Estimate target price using intrinsic + small premium
@@ -220,6 +334,19 @@ def recommend_strikes(
             target_price = max(c.delta * (recovery_target - target_strike + 1.0), 0.05)
 
         gain_pct = (target_price - entry) / entry * 100
+
+        # Leverage-weighted ranking score. Square-root prevents the cheapest
+        # strike from always winning regardless of est_gain_pct (a $0.01 entry
+        # with even tiny target would otherwise dominate). With sqrt, a $0.10
+        # cost basis with 200% est_gain beats a $1.00 cost basis with 50%
+        # est_gain by roughly 4× — matches what the backtest shows.
+        # Uses cap_ref (≈ actual fill price), NOT entry (which is opt_low and
+        # can spike to $0.01 intraday). cap_ref is the cost-basis reference
+        # consistent with the cap filter and with backtest sizing.
+        if apply_leverage_bonus and cap_ref > 0:
+            leverage_score = gain_pct * (1.0 / cap_ref) ** 0.5
+        else:
+            leverage_score = gain_pct
 
         if offset <= 3:
             risk_cat = "MODERATE — deeper ITM, smaller % gain"
@@ -234,6 +361,19 @@ def recommend_strikes(
         elif entry <= 0.15:
             cost_note += " (cheap)"
 
+        # Realistic current-price estimate for DISPLAY (not for ranking).
+        # day_close in a Polygon snapshot is the close of the most recent
+        # 1-min bar ≈ the option's current price. Falls back gracefully if
+        # day_close is missing or zero. Always clamped to the $0.01 floor
+        # because the OCC clears option contracts at penny tick increments
+        # and exchanges will not show a print below $0.01.
+        display_entry = max(c.day_close, c.day_open, c.day_low, 0.01)
+        # Honest gain-pct from where you'd actually fill, not from intraday low.
+        if display_entry > 0:
+            display_gain = (target_price - display_entry) / display_entry * 100
+        else:
+            display_gain = 0.0
+
         recs.append(StrikeRecommendation(
             strike=target_strike,
             dist_from_low=float(offset),
@@ -243,26 +383,58 @@ def recommend_strikes(
             est_gain_pct=gain_pct,
             risk_category=risk_cat,
             note=cost_note,
+            contract_ticker=c.ticker,
+            leverage_score=leverage_score,
+            display_entry_price=display_entry,
+            display_gain_pct=display_gain,
         ))
 
-    recs.sort(key=lambda x: -x.est_gain_pct)
+    # Sort by leverage_score (the new ranking) so the top entry is what the
+    # dashboard would surface. Callers that still ranks by est_gain_pct will
+    # see the same recs, just in a different order — no breakage.
+    recs.sort(key=lambda x: -x.leverage_score)
     return recs
 
 
 # ── Historical multiplier estimates ──────────────────────────────────────────
 
-def drop_band_multiplier_table() -> list[dict]:
-    """Hardcoded 2-year SPY historical estimates (pre-computed from BSM model).
+# Date the realised numbers below were last validated against Polygon.
+# Re-run scripts/backtest_per_source_gate.py periodically and bump this if
+# the regime has shifted (e.g. quarterly).
+DROP_BAND_TABLE_SCAN_DATE = "2026-05-13"
 
-    Columns: drop_band, n_sessions, pct_1000plus, avg_recovery_needed_pts,
-             median_max_gain_pct.
+
+def drop_band_multiplier_table() -> list[dict]:
+    """Drop-to-recovery probabilities used by the live 0DTE Drop alert.
+
+    The 3-5 / 5-7 / 7-10 / 10+ bands were re-calibrated 2026-05-13 from 110
+    real Polygon 0DTE option trades on SPY/QQQ/IWM over the trailing 90
+    sessions (scripts/backtest_per_source_gate.py). The original numbers
+    were "pre-computed from BSM model" at an unknown earlier date and
+    understated the true win rate by a factor of 2-7×, which combined with
+    the unified-edge gate in app.py ("Today's Plays") to silence the entire
+    source. See the analysis chat dated 2026-05-13 for the validation.
+
+    The 0-1 / 1-2 / 2-3 bands were NOT recalibrated — they're below the
+    ENTRY_OPEN trigger of 3.0 pts so they never reach the live alert path.
+
+    Columns:
+      band              — drop range in points (open - low)
+      n                 — sample size in the calibration window
+      pct_1000plus      — % of sessions where the algo's recommended
+                          0DTE strike produced ≥1000% intraday gain
+                          (entry near opt low, exit near opt high)
+      recovery_needed   — typical underlying recovery required for a 1000% move
+      note              — UI hint (kept short for the dashboard banner)
     """
     return [
+        # 0-1 / 1-2 / 2-3 — below trigger, original BSM-era values retained
         {"band": "0–1 pts",    "n": 136, "pct_1000plus":  2, "recovery_needed":  2.0, "note": "No setup"},
         {"band": "1–2 pts",    "n":  84, "pct_1000plus":  5, "recovery_needed":  3.5, "note": "No setup"},
         {"band": "2–3 pts",    "n":  69, "pct_1000plus": 12, "recovery_needed":  5.0, "note": "Marginal"},
-        {"band": "3–5 pts",    "n":  78, "pct_1000plus": 35, "recovery_needed":  6.9, "note": "WATCH 👀"},
-        {"band": "5–7 pts",    "n":  40, "pct_1000plus": 28, "recovery_needed":  8.1, "note": "WATCH 👀"},
-        {"band": "7–10 pts",   "n":  33, "pct_1000plus":  9, "recovery_needed": 16.6, "note": "Hard recovery"},
-        {"band": "10+ pts",    "n":  12, "pct_1000plus":  0, "recovery_needed":   0,  "note": "Skip — gap day"},
+        # 3+ bands — recalibrated 2026-05-13 from real Polygon 90-day data
+        {"band": "3–5 pts",    "n":  48, "pct_1000plus": 54, "recovery_needed":  6.0, "note": "TRADE 🎯"},
+        {"band": "5–7 pts",    "n":  28, "pct_1000plus": 61, "recovery_needed":  7.2, "note": "TRADE 🎯"},
+        {"band": "7–10 pts",   "n":  21, "pct_1000plus": 62, "recovery_needed":  9.6, "note": "TRADE 🎯"},
+        {"band": "10+ pts",    "n":  13, "pct_1000plus": 69, "recovery_needed": 12.9, "note": "TRADE 🎯 (high variance)"},
     ]

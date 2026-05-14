@@ -47,3 +47,17 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local secrets — never commit
+.env
+.env.*
+!.env.template
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Backtest run logs (regenerable, large)
+artifacts/
